@@ -10,6 +10,8 @@ data_in/best_artworks/*.zip
 data_in/best_artworks/features_cnn.csv
 data_out/*.pdf
 data_out/*.csv
+data_out/*.png
+logs/
 
 .idea/
 .vscode/

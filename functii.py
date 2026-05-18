@@ -71,6 +71,120 @@ def preprocesare_imagine(path, target_size=(224, 224)):
     return arr[0]
 
 
+LAYERE_VIZ = ("block1_conv2", "block2_conv2", "block3_conv3", "block4_conv3", "block5_conv3")
+
+
+def _diagrama_visualkeras(model, output_path):
+    """Salveaza o singura data diagrama 3D-style a VGG16 cu visualkeras."""
+    try:
+        import visualkeras
+        visualkeras.layered_view(
+            model,
+            to_file=str(output_path),
+            legend=True,
+            spacing=25,
+            scale_xy=1.6,
+            max_z=160,
+            draw_volume=True,
+        )
+        print(f"[viz] diagrama arhitectura salvata: {output_path}")
+        return True
+    except Exception as exc:
+        print(f"[viz] visualkeras indisponibil ({exc}) — sar peste diagrama 3D")
+        return False
+
+
+def _setup_tensorboard(root="logs/vgg16_extraction"):
+    """Initializeaza un FileWriter TensorBoard cu timestamp. Returneaza (writer, log_dir)."""
+    try:
+        import datetime
+        import tensorflow as tf
+        log_dir = Path(root) / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        writer = tf.summary.create_file_writer(str(log_dir))
+        print(f"[viz] TensorBoard logs: {log_dir}")
+        print(f"[viz] porneste: tensorboard --logdir {root} --port 6006")
+        return writer, log_dir
+    except Exception as exc:
+        print(f"[viz] TensorBoard indisponibil ({exc})")
+        return None, None
+
+
+def _salveaza_feature_maps_png(raw_img, activari, batch_idx, pictor, durata, output_path):
+    """Salveaza PNG cu input + 8 feature maps per layer din LAYERE_VIZ (5 layere)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    n_rows = len(activari) + 1
+    n_cols = 8
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 2.0, n_rows * 2.0))
+    if n_rows == 1:
+        axes = np.array([axes])
+
+    for col in range(n_cols):
+        axes[0, col].axis("off")
+    axes[0, 0].imshow(np.clip(raw_img, 0, 255).astype(np.uint8))
+    axes[0, 0].set_title("Input (224x224)", fontsize=9)
+    axes[0, 3].text(
+        0.5, 0.5,
+        f"Batch #{batch_idx}\nPictor: {pictor}\nDurata: {durata:.2f}s",
+        ha="center", va="center", fontsize=11,
+        transform=axes[0, 3].transAxes,
+    )
+
+    for row_idx, (nume_strat, act) in enumerate(activari.items(), start=1):
+        sample = act[0]
+        n_canale = min(n_cols, sample.shape[-1])
+        norme = sample.mean(axis=(0, 1))
+        top_idx = np.argsort(-norme)[:n_canale]
+        for col in range(n_cols):
+            ax = axes[row_idx, col]
+            if col < n_canale:
+                ch = top_idx[col]
+                ax.imshow(sample[:, :, ch], cmap="viridis")
+                if col == 0:
+                    ax.set_title(
+                        f"{nume_strat}  shape={tuple(sample.shape)}",
+                        fontsize=9, loc="left",
+                    )
+            ax.set_xticks([]); ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+
+    fig.suptitle(
+        f"VGG16 — feature maps live (top 8 canale per layer)",
+        fontsize=13, y=0.995,
+    )
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=80, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _log_tensorboard(writer, raw_batch, activari, batch_idx, durata, throughput, sarite):
+    """Scrie imagini + feature maps + histograme + scalari in TensorBoard."""
+    if writer is None:
+        return
+    import tensorflow as tf
+    with writer.as_default():
+        if raw_batch:
+            imgs = np.stack(raw_batch[: min(4, len(raw_batch))], axis=0) / 255.0
+            tf.summary.image("input/imagini_originale", imgs, max_outputs=4, step=batch_idx)
+        for nume_strat, act in activari.items():
+            n_canale = min(8, act.shape[-1])
+            sample = act[0:1, :, :, :n_canale]
+            sample = tf.transpose(sample, [3, 1, 2, 0])
+            tf.summary.image(
+                f"feature_maps/{nume_strat}",
+                sample, max_outputs=n_canale, step=batch_idx,
+            )
+            tf.summary.histogram(f"activari/{nume_strat}", act, step=batch_idx)
+        tf.summary.scalar("perf/timp_batch_s", durata, step=batch_idx)
+        tf.summary.scalar("perf/throughput_img_per_s", throughput, step=batch_idx)
+        tf.summary.scalar("perf/sarite_cumulat", sarite, step=batch_idx)
+    writer.flush()
+
+
 def extragere_cnn_vgg16(image_paths, batch_size=32):
     """
     Extrage vectori 4096-dim din stratul fc2 al VGG16 cu afișaj live multi-panou.
@@ -79,6 +193,11 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
     iar dashboard-ul `rich` actualizează în timp real: bara de batch-uri, bara
     de strat curent, statistici (pictor, throughput, params/strat, ETA, etapă)
     și log-ul ultimelor batch-uri finalizate.
+
+    În paralel salvează vizualizări neurale:
+      • data_out/VGG16_arhitectura.png  — diagrama 3D statica (visualkeras)
+      • data_out/VGG16_feature_maps_live.png — feature maps reale, refresh/batch
+      • logs/vgg16_extraction/<ts>/ — log TensorBoard (deschide cu `tensorboard --logdir logs`)
     """
     import time
     from collections import deque
@@ -108,6 +227,12 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
         layers_lant.append(layer)
         if layer.name == "fc2":
             break
+
+    DATA_OUT.mkdir(parents=True, exist_ok=True)
+    diagrama_path = DATA_OUT / "VGG16_arhitectura.png"
+    feature_maps_path = DATA_OUT / "VGG16_feature_maps_live.png"
+    _diagrama_visualkeras(base, diagrama_path)
+    tb_writer, tb_log_dir = _setup_tensorboard()
 
     n_total = len(image_paths)
     n_batches = (n_total + batch_size - 1) // batch_size
@@ -185,6 +310,26 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
         )
         return tabel
 
+    def panou_viz():
+        tabel = Table.grid(padding=(0, 2))
+        tabel.add_column(style="bold dim", justify="right")
+        tabel.add_column(style="bold white")
+        tabel.add_row("Diagrama 3D:", f"[blue]{diagrama_path}[/blue]")
+        tabel.add_row(
+            "Feature maps live:",
+            f"[blue]{feature_maps_path}[/blue]  [dim](refresh / batch)[/dim]",
+        )
+        if tb_log_dir is not None:
+            tabel.add_row(
+                "TensorBoard:",
+                f"[blue]{tb_log_dir}[/blue]",
+            )
+            tabel.add_row(
+                "Comanda TB:",
+                "[green]tensorboard --logdir logs/vgg16_extraction --port 6006[/green]",
+            )
+        return tabel
+
     def panou_log():
         tabel = Table.grid(padding=(0, 1))
         if log_recent:
@@ -221,6 +366,12 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
                 padding=(0, 1),
             ),
             Panel(
+                panou_viz(),
+                title="Vizualizari neurale",
+                border_style="blue",
+                padding=(0, 1),
+            ),
+            Panel(
                 panou_log(),
                 title="Ultimele batch-uri",
                 border_style="dim",
@@ -242,11 +393,13 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
             live.update(dashboard())
 
             t0 = time.time()
-            arr_list, ok_list = [], []
+            arr_list, ok_list, raw_list = [], [], []
             for p in batch_paths:
                 try:
                     img = image.load_img(p, target_size=(224, 224))
-                    arr_list.append(image.img_to_array(img))
+                    arr = image.img_to_array(img)
+                    raw_list.append(arr)
+                    arr_list.append(arr)
                     ok_list.append(p)
                 except Exception as exc:
                     sarite += 1
@@ -254,6 +407,7 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
                         Text.from_markup(f"[red][skip][/red] {Path(p).name}: {exc}")
                     )
 
+            activari_batch = {}
             if arr_list:
                 x = tf.constant(
                     preprocess_input(np.stack(arr_list, axis=0)), dtype=tf.float32
@@ -265,6 +419,8 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
                     stare["layer_nume"] = layer.name
                     stare["layer_tip"] = type(layer).__name__
                     x = layer(x)
+                    if layer.name in LAYERE_VIZ:
+                        activari_batch[layer.name] = x.numpy().copy()
                     stare["shape"] = str(tuple(x.shape))
                     stare["params_strat"] = int(layer.count_params())
                     progres_strat.update(
@@ -279,11 +435,32 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
                 features.append(feats)
                 paths_ok.extend(ok_list)
                 imagini_ok += len(ok_list)
-                stare["etapa"] = "[green]salvare batch[/green]"
 
             durata = time.time() - t0
             timpi_batch.append(durata)
             stare["throughput"] = (len(ok_list) / durata) if durata > 0 else 0.0
+
+            if activari_batch and raw_list:
+                stare["etapa"] = "[green]salvare vizualizari[/green]"
+                live.update(dashboard())
+                try:
+                    _salveaza_feature_maps_png(
+                        raw_list[0], activari_batch, batch_idx + 1,
+                        stare["pictor"], durata, feature_maps_path,
+                    )
+                except Exception as exc:
+                    log_recent.append(
+                        Text.from_markup(f"[yellow][viz][/yellow] PNG: {exc}")
+                    )
+                try:
+                    _log_tensorboard(
+                        tb_writer, raw_list, activari_batch, batch_idx + 1,
+                        durata, stare["throughput"], sarite,
+                    )
+                except Exception as exc:
+                    log_recent.append(
+                        Text.from_markup(f"[yellow][viz][/yellow] TB: {exc}")
+                    )
             log_recent.append(
                 Text.from_markup(
                     f"[dim]#{batch_idx + 1:03d}[/dim]  "

@@ -9,3 +9,5 @@ scipy
 kaggle
 tqdm
 rich
+visualkeras
+aggdraw
