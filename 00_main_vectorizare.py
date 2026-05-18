@@ -5,6 +5,7 @@ Pas 0: descarcă datasetul Best Artworks (dacă lipsește), extrage vectori VGG1
 import os
 import sys
 import shutil
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -81,12 +82,21 @@ def colecteaza_paths_si_metadata():
     df_art["epoca"] = df_art["years"].apply(functii.deriva_epoca)
     df_art["stil"] = df_art["genre"].apply(functii.deriva_stil)
 
+    # Construieste lookup NFC(nume_folder) -> cale reala pentru a gestiona
+    # diferentele de normalizare Unicode (NFD pe disc vs NFC in CSV).
+    folder_map = {
+        unicodedata.normalize("NFC", d.name): d
+        for d in IMAGES.iterdir()
+        if d.is_dir()
+    }
+
     rows = []
     extensii = {".jpg", ".jpeg", ".png", ".bmp"}
     for _, row in df_art.iterrows():
-        folder = IMAGES / row["folder"]
-        if not folder.exists():
-            print(f"[warn] folderul lipsește: {folder}")
+        folder_nfc = unicodedata.normalize("NFC", row["folder"])
+        folder = folder_map.get(folder_nfc)
+        if folder is None:
+            print(f"[warn] folderul lipsește: {IMAGES / row['folder']}")
             continue
         for p in sorted(folder.iterdir()):
             if p.suffix.lower() in extensii:
