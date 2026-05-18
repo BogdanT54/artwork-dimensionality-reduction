@@ -5,8 +5,6 @@ Pas 0: descarcă datasetul Best Artworks (dacă lipsește), extrage vectori VGG1
 import os
 import sys
 import shutil
-import subprocess
-import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -20,23 +18,48 @@ ARTISTS_CSV = DATA_IN / "artists.csv"
 FEATURES_CSV = DATA_IN / "features_cnn.csv"
 
 
+def _configureaza_kaggle_config_dir():
+    """
+    Caută kaggle.json în ordine: $KAGGLE_CONFIG_DIR → ~/.kaggle → ./.kaggle (workspace).
+    Setează KAGGLE_CONFIG_DIR înainte de import-ul kaggle (care citește la import-time).
+    """
+    if os.environ.get("KAGGLE_CONFIG_DIR") and \
+       (Path(os.environ["KAGGLE_CONFIG_DIR"]) / "kaggle.json").exists():
+        return
+    candidati = [Path.home() / ".kaggle", Path.cwd() / ".kaggle"]
+    for c in candidati:
+        if (c / "kaggle.json").exists():
+            os.environ["KAGGLE_CONFIG_DIR"] = str(c)
+            print(f"[info] kaggle.json găsit la {c}")
+            return
+    sys.exit("[eroare] kaggle.json nu a fost găsit. Pune-l în ~/.kaggle/kaggle.json "
+             "sau în ./.kaggle/kaggle.json din workspace (chmod 600).")
+
+
 def descarca_kaggle():
-    """Descarcă datasetul de pe Kaggle dacă nu există local."""
+    """Descarcă datasetul de pe Kaggle dacă nu există local — via API Python (nu CLI)."""
     if IMAGES.exists() and ARTISTS_CSV.exists():
         print(f"[OK] dataset deja prezent la {DATA_IN}")
         return
     DATA_IN.mkdir(parents=True, exist_ok=True)
+    _configureaza_kaggle_config_dir()
     print("[info] descărcare Best Artworks of All Time de pe Kaggle ...")
-    cmd = ["kaggle", "datasets", "download",
-           "-d", "ikarus777/best-artworks-of-all-time",
-           "-p", str(DATA_IN), "--unzip"]
     try:
-        subprocess.run(cmd, check=True)
-    except FileNotFoundError:
-        sys.exit("[eroare] kaggle CLI nu este instalat. Rulează: pip install kaggle")
-    except subprocess.CalledProcessError as e:
-        sys.exit(f"[eroare] descărcare Kaggle eșuată: {e}\n"
-                 f"Verifică ~/.kaggle/kaggle.json (chmod 600).")
+        from kaggle.api.kaggle_api_extended import KaggleApi
+    except ImportError:
+        sys.exit("[eroare] pachetul 'kaggle' nu este instalat. Rulează: pip install kaggle")
+
+    api = KaggleApi()
+    try:
+        api.authenticate()
+    except Exception as e:
+        sys.exit(f"[eroare] autentificare Kaggle eșuată: {e}\n"
+                 f"Verifică username + key în kaggle.json.")
+    try:
+        api.dataset_download_files("ikarus777/best-artworks-of-all-time",
+                                    path=str(DATA_IN), unzip=True, quiet=False)
+    except Exception as e:
+        sys.exit(f"[eroare] descărcare dataset eșuată: {e}")
 
     # Normalize layout: Kaggle archive may extract to images/images/<artist>/...
     nested = IMAGES / "images"
