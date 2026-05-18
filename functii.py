@@ -71,41 +71,110 @@ def preprocesare_imagine(path, target_size=(224, 224)):
     return arr[0]
 
 
+def _afiseaza_arhitectura_vgg16(n_imagini, batch_size):
+    """Afișează diagrama arhitecturii VGG16 și statisticile sesiunii de extracție."""
+    n_batches = (n_imagini + batch_size - 1) // batch_size
+    W = 61
+    sep = "+" + "-" * (W - 2) + "+"
+
+    def rand(text):
+        padding = W - 2 - len(text)
+        return "| " + text + " " * (padding - 1) + "|"
+
+    linii = [
+        "",
+        sep,
+        rand("  VGG16  —  extragere vectori fc2 (4096-dim, ReLU >= 0)"),
+        sep,
+        rand("  Input:  224 x 224 x 3  (ImageNet preprocess)"),
+        rand(""),
+        rand("  Block 1 :  Conv3-64  -> Conv3-64  -> MaxPool"),
+        rand("  Block 2 :  Conv3-128 -> Conv3-128 -> MaxPool"),
+        rand("  Block 3 :  Conv3-256 -> Conv3-256 -> Conv3-256 -> MaxPool"),
+        rand("  Block 4 :  Conv3-512 -> Conv3-512 -> Conv3-512 -> MaxPool"),
+        rand("  Block 5 :  Conv3-512 -> Conv3-512 -> Conv3-512 -> MaxPool"),
+        rand(""),
+        rand("  Flatten  ->  FC-4096 (ReLU)  ->  [FC-4096]  ->  FC-1000"),
+        rand("                                         ^"),
+        rand("                                    iesire fc2"),
+        sep,
+        rand(f"  {n_imagini} imagini  |  batch {batch_size}  |  {n_batches} batch-uri totale"),
+        sep,
+        "",
+    ]
+    for linie in linii:
+        print(linie)
+
+
 def extragere_cnn_vgg16(image_paths, batch_size=32):
     """
     Extrage vectori 4096-dim din stratul fc2 al VGG16 (activare ReLU → valori ≥ 0).
 
     Returnează ndarray (n_imagini, 4096) și lista de paths efectiv procesate.
     """
+    import time
     from tensorflow.keras.applications.vgg16 import VGG16, preprocess_input
     from tensorflow.keras.models import Model
     from tensorflow.keras.preprocessing import image
     from tqdm import tqdm
 
+    _afiseaza_arhitectura_vgg16(len(image_paths), batch_size)
+
     base = VGG16(weights="imagenet", include_top=True)
     model = Model(inputs=base.input, outputs=base.get_layer("fc2").output)
+    print()
 
-    features = []
-    paths_ok = []
-    for start in tqdm(range(0, len(image_paths), batch_size), desc="VGG16 fc2"):
-        batch_paths = image_paths[start:start + batch_size]
-        batch = []
-        batch_ok = []
+    n_total = len(image_paths)
+    n_batches = (n_total + batch_size - 1) // batch_size
+    features, paths_ok, imagini_ok, sarite = [], [], 0, 0
+    timpi_batch = []
+
+    bara = tqdm(
+        range(0, n_total, batch_size),
+        total=n_batches,
+        desc="  VGG16 fc2",
+        unit="batch",
+        dynamic_ncols=True,
+    )
+    for start in bara:
+        batch_paths = image_paths[start : start + batch_size]
+        pictor = Path(batch_paths[0]).parent.name.replace("_", " ") if batch_paths else "?"
+
+        t0 = time.time()
+        arr_list, ok_list = [], []
         for p in batch_paths:
             try:
                 img = image.load_img(p, target_size=(224, 224))
-                arr = image.img_to_array(img)
-                batch.append(arr)
-                batch_ok.append(p)
-            except Exception as e:
-                print(f"[skip] {p}: {e}")
-        if not batch:
-            continue
-        batch_np = preprocess_input(np.stack(batch, axis=0))
-        feats = model.predict(batch_np, verbose=0)
-        features.append(feats)
-        paths_ok.extend(batch_ok)
+                arr_list.append(image.img_to_array(img))
+                ok_list.append(p)
+            except Exception as exc:
+                sarite += 1
+                tqdm.write(f"  [skip] {Path(p).name}: {exc}")
 
+        if arr_list:
+            batch_np = preprocess_input(np.stack(arr_list, axis=0))
+            feats = model.predict(batch_np, verbose=0)
+            features.append(feats)
+            paths_ok.extend(ok_list)
+            imagini_ok += len(ok_list)
+
+        durata = time.time() - t0
+        timpi_batch.append(durata)
+
+        bara.set_postfix(
+            pictor=pictor[:22],
+            imagini=f"{imagini_ok}/{n_total}",
+            s_batch=f"{durata:.1f}s",
+            sarite=sarite,
+        )
+
+    bara.close()
+    medie = float(np.mean(timpi_batch)) if timpi_batch else 0.0
+    print(
+        f"\n  [OK] {imagini_ok} imagini procesate"
+        f"  |  {sarite} sarite"
+        f"  |  medie {medie:.2f}s/batch\n"
+    )
     return np.vstack(features), paths_ok
 
 
