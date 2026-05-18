@@ -71,108 +71,235 @@ def preprocesare_imagine(path, target_size=(224, 224)):
     return arr[0]
 
 
-def _afiseaza_arhitectura_vgg16(n_imagini, batch_size):
-    """Afișează diagrama arhitecturii VGG16 și statisticile sesiunii de extracție."""
-    n_batches = (n_imagini + batch_size - 1) // batch_size
-    W = 61
-    sep = "+" + "-" * (W - 2) + "+"
-
-    def rand(text):
-        padding = W - 2 - len(text)
-        return "| " + text + " " * (padding - 1) + "|"
-
-    linii = [
-        "",
-        sep,
-        rand("  VGG16  —  extragere vectori fc2 (4096-dim, ReLU >= 0)"),
-        sep,
-        rand("  Input:  224 x 224 x 3  (ImageNet preprocess)"),
-        rand(""),
-        rand("  Block 1 :  Conv3-64  -> Conv3-64  -> MaxPool"),
-        rand("  Block 2 :  Conv3-128 -> Conv3-128 -> MaxPool"),
-        rand("  Block 3 :  Conv3-256 -> Conv3-256 -> Conv3-256 -> MaxPool"),
-        rand("  Block 4 :  Conv3-512 -> Conv3-512 -> Conv3-512 -> MaxPool"),
-        rand("  Block 5 :  Conv3-512 -> Conv3-512 -> Conv3-512 -> MaxPool"),
-        rand(""),
-        rand("  Flatten  ->  FC-4096 (ReLU)  ->  [FC-4096]  ->  FC-1000"),
-        rand("                                         ^"),
-        rand("                                    iesire fc2"),
-        sep,
-        rand(f"  {n_imagini} imagini  |  batch {batch_size}  |  {n_batches} batch-uri totale"),
-        sep,
-        "",
-    ]
-    for linie in linii:
-        print(linie)
-
-
 def extragere_cnn_vgg16(image_paths, batch_size=32):
     """
-    Extrage vectori 4096-dim din stratul fc2 al VGG16 (activare ReLU → valori ≥ 0).
+    Extrage vectori 4096-dim din stratul fc2 al VGG16 cu afișaj live multi-panou.
 
-    Returnează ndarray (n_imagini, 4096) și lista de paths efectiv procesate.
+    Forward pass-ul rulează în mod eager strat-cu-strat (Conv2D → Pool → … → fc2),
+    iar dashboard-ul `rich` actualizează în timp real: bara de batch-uri, bara
+    de strat curent, statistici (pictor, throughput, params/strat, ETA, etapă)
+    și log-ul ultimelor batch-uri finalizate.
     """
     import time
-    from tensorflow.keras.applications.vgg16 import VGG16, preprocess_input
-    from tensorflow.keras.models import Model
-    from tensorflow.keras.preprocessing import image
-    from tqdm import tqdm
+    from collections import deque
 
-    _afiseaza_arhitectura_vgg16(len(image_paths), batch_size)
+    import tensorflow as tf
+    from tensorflow.keras.applications.vgg16 import VGG16, preprocess_input
+    from tensorflow.keras.preprocessing import image
+
+    from rich.console import Console, Group
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.progress import (
+        BarColumn,
+        Progress,
+        TextColumn,
+        TimeElapsedColumn,
+        TimeRemainingColumn,
+    )
+    from rich.table import Table
+    from rich.text import Text
 
     base = VGG16(weights="imagenet", include_top=True)
-    model = Model(inputs=base.input, outputs=base.get_layer("fc2").output)
-    print()
+    layers_lant = []
+    for layer in base.layers:
+        if isinstance(layer, tf.keras.layers.InputLayer):
+            continue
+        layers_lant.append(layer)
+        if layer.name == "fc2":
+            break
 
     n_total = len(image_paths)
     n_batches = (n_total + batch_size - 1) // batch_size
-    features, paths_ok, imagini_ok, sarite = [], [], 0, 0
+    n_straturi = len(layers_lant)
+
+    features, paths_ok = [], []
+    imagini_ok, sarite = 0, 0
     timpi_batch = []
+    log_recent = deque(maxlen=6)
 
-    bara = tqdm(
-        range(0, n_total, batch_size),
-        total=n_batches,
-        desc="  VGG16 fc2",
-        unit="batch",
-        dynamic_ncols=True,
+    progres_batch = Progress(
+        TextColumn("[bold cyan]Batch"),
+        BarColumn(bar_width=40, complete_style="cyan", finished_style="green"),
+        TextColumn("[cyan]{task.completed:>3}/{task.total}"),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+        TextColumn("ETA"),
+        TimeRemainingColumn(),
     )
-    for start in bara:
-        batch_paths = image_paths[start : start + batch_size]
-        pictor = Path(batch_paths[0]).parent.name.replace("_", " ") if batch_paths else "?"
+    task_batch = progres_batch.add_task("", total=n_batches)
 
-        t0 = time.time()
-        arr_list, ok_list = [], []
-        for p in batch_paths:
-            try:
-                img = image.load_img(p, target_size=(224, 224))
-                arr_list.append(image.img_to_array(img))
-                ok_list.append(p)
-            except Exception as exc:
-                sarite += 1
-                tqdm.write(f"  [skip] {Path(p).name}: {exc}")
+    progres_strat = Progress(
+        TextColumn("[bold magenta]Strat"),
+        BarColumn(bar_width=40, complete_style="magenta", finished_style="green"),
+        TextColumn("[magenta]{task.completed:>2}/{task.total}"),
+        TextColumn("[white]{task.description}"),
+    )
+    task_strat = progres_strat.add_task("idle", total=n_straturi)
 
-        if arr_list:
-            batch_np = preprocess_input(np.stack(arr_list, axis=0))
-            feats = model.predict(batch_np, verbose=0)
-            features.append(feats)
-            paths_ok.extend(ok_list)
-            imagini_ok += len(ok_list)
+    stare = {
+        "pictor": "-",
+        "etapa": "asteptare",
+        "layer_nume": "-",
+        "layer_tip": "-",
+        "shape": "-",
+        "params_strat": 0,
+        "throughput": 0.0,
+        "start_total": time.time(),
+    }
 
-        durata = time.time() - t0
-        timpi_batch.append(durata)
-
-        bara.set_postfix(
-            pictor=pictor[:22],
-            imagini=f"{imagini_ok}/{n_total}",
-            s_batch=f"{durata:.1f}s",
-            sarite=sarite,
+    def panou_arhitectura():
+        return Text.from_markup(
+            "[dim]Input[/dim] [cyan]224×224×3[/cyan]  →  "
+            "[yellow]B1[/yellow][dim]:conv64×2·pool[/dim]  →  "
+            "[yellow]B2[/yellow][dim]:conv128×2·pool[/dim]  →  "
+            "[yellow]B3[/yellow][dim]:conv256×3·pool[/dim]  →  "
+            "[yellow]B4[/yellow][dim]:conv512×3·pool[/dim]  →  "
+            "[yellow]B5[/yellow][dim]:conv512×3·pool[/dim]  →  "
+            "[green]Flatten[/green]  →  [green]FC4096[/green]  →  "
+            "[bold green on black] fc2 [/bold green on black]"
         )
 
-    bara.close()
+    def panou_stat():
+        tabel = Table.grid(padding=(0, 2))
+        tabel.add_column(style="bold dim", justify="right")
+        tabel.add_column(style="bold white")
+        tabel.add_row("Pictor curent:", f"[cyan]{stare['pictor']}[/cyan]")
+        tabel.add_row("Etapă:", stare["etapa"])
+        tabel.add_row(
+            "Strat activ:",
+            f"[bold]{stare['layer_nume']}[/bold]  "
+            f"[dim]({stare['layer_tip']})[/dim]",
+        )
+        tabel.add_row("Output shape:", f"[yellow]{stare['shape']}[/yellow]")
+        tabel.add_row("Params strat:", f"{stare['params_strat']:,}")
+        tabel.add_row("Imagini OK:", f"{imagini_ok} / {n_total}")
+        tabel.add_row("Sărite:", str(sarite))
+        tabel.add_row("Throughput:", f"{stare['throughput']:.2f} img/s")
+        medie = (sum(timpi_batch) / len(timpi_batch)) if timpi_batch else 0.0
+        tabel.add_row("Medie / batch:", f"{medie:.2f} s")
+        scurs = time.time() - stare["start_total"]
+        tabel.add_row(
+            "Total scurs:",
+            f"{int(scurs // 60):02d}:{int(scurs % 60):02d}",
+        )
+        return tabel
+
+    def panou_log():
+        tabel = Table.grid(padding=(0, 1))
+        if log_recent:
+            for linie in log_recent:
+                tabel.add_row(linie)
+        else:
+            tabel.add_row(Text("(niciun batch finalizat încă)", style="dim"))
+        return tabel
+
+    def dashboard():
+        return Group(
+            Panel(
+                panou_arhitectura(),
+                title="VGG16 — arhitectură",
+                border_style="cyan",
+                padding=(0, 1),
+            ),
+            Panel(
+                progres_batch,
+                title=f"Progres total ({n_total} imagini)",
+                border_style="green",
+                padding=(0, 1),
+            ),
+            Panel(
+                progres_strat,
+                title=f"Forward pass — strat activ ({n_straturi} layere până la fc2)",
+                border_style="magenta",
+                padding=(0, 1),
+            ),
+            Panel(
+                panou_stat(),
+                title="Statistici live",
+                border_style="yellow",
+                padding=(0, 1),
+            ),
+            Panel(
+                panou_log(),
+                title="Ultimele batch-uri",
+                border_style="dim",
+                padding=(0, 1),
+            ),
+        )
+
+    console = Console()
+    with Live(dashboard(), console=console, refresh_per_second=12) as live:
+        for batch_idx, start in enumerate(range(0, n_total, batch_size)):
+            batch_paths = image_paths[start : start + batch_size]
+            stare["pictor"] = (
+                Path(batch_paths[0]).parent.name.replace("_", " ")
+                if batch_paths
+                else "?"
+            )
+
+            stare["etapa"] = "[cyan]încărcare + preprocesare[/cyan]"
+            live.update(dashboard())
+
+            t0 = time.time()
+            arr_list, ok_list = [], []
+            for p in batch_paths:
+                try:
+                    img = image.load_img(p, target_size=(224, 224))
+                    arr_list.append(image.img_to_array(img))
+                    ok_list.append(p)
+                except Exception as exc:
+                    sarite += 1
+                    log_recent.append(
+                        Text.from_markup(f"[red][skip][/red] {Path(p).name}: {exc}")
+                    )
+
+            if arr_list:
+                x = tf.constant(
+                    preprocess_input(np.stack(arr_list, axis=0)), dtype=tf.float32
+                )
+                stare["etapa"] = "[magenta]forward pass (eager, strat cu strat)[/magenta]"
+                progres_strat.reset(task_strat, total=n_straturi)
+
+                for li, layer in enumerate(layers_lant):
+                    stare["layer_nume"] = layer.name
+                    stare["layer_tip"] = type(layer).__name__
+                    x = layer(x)
+                    stare["shape"] = str(tuple(x.shape))
+                    stare["params_strat"] = int(layer.count_params())
+                    progres_strat.update(
+                        task_strat,
+                        completed=li + 1,
+                        description=f"[bold]{layer.name}[/bold]  "
+                        f"[dim]→ {tuple(x.shape)}[/dim]",
+                    )
+                    live.update(dashboard())
+
+                feats = x.numpy()
+                features.append(feats)
+                paths_ok.extend(ok_list)
+                imagini_ok += len(ok_list)
+                stare["etapa"] = "[green]salvare batch[/green]"
+
+            durata = time.time() - t0
+            timpi_batch.append(durata)
+            stare["throughput"] = (len(ok_list) / durata) if durata > 0 else 0.0
+            log_recent.append(
+                Text.from_markup(
+                    f"[dim]#{batch_idx + 1:03d}[/dim]  "
+                    f"[cyan]{stare['pictor'][:22]:<22}[/cyan]  "
+                    f"[bold]{durata:5.1f}s[/bold]  "
+                    f"[green]OK[/green] {len(ok_list)} img"
+                )
+            )
+
+            progres_batch.update(task_batch, advance=1)
+            live.update(dashboard())
+
     medie = float(np.mean(timpi_batch)) if timpi_batch else 0.0
     print(
         f"\n  [OK] {imagini_ok} imagini procesate"
-        f"  |  {sarite} sarite"
+        f"  |  {sarite} sărite"
         f"  |  medie {medie:.2f}s/batch\n"
     )
     return np.vstack(features), paths_ok
