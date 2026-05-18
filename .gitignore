@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+data_in/best_artworks/images/
+data_in/best_artworks/*.zip
+data_in/best_artworks/features_cnn.csv
+data_out/*.pdf
+data_out/*.csv
+
+.idea/
+.vscode/
+.DS_Store
