@@ -102,9 +102,74 @@ def _construieste_model(n_classes):
     return model
 
 
+# ─── callback feature maps live ──────────────────────────────────────────────
+
+def _construieste_callback_feature_maps(sample_img_path, output_path, freq_batches=25):
+    """
+    Callback Keras: pe parcursul antrenării, la fiecare `freq_batches` batch-uri,
+    extrage feature maps (LAYERE_VIZ) pentru o imagine de referință, salvează
+    PNG-ul și îl actualizează inline în notebook (Kaggle/Jupyter).
+    """
+    import tensorflow as tf
+    from tensorflow.keras.preprocessing import image as kimage
+    from tensorflow.keras.applications.vgg16 import preprocess_input
+
+    img = kimage.load_img(sample_img_path, target_size=(224, 224))
+    raw = kimage.img_to_array(img)
+    x_in = preprocess_input(np.expand_dims(raw.copy(), axis=0))
+    sample_name = Path(sample_img_path).parent.name.replace("_", " ")
+
+    class _CB(tf.keras.callbacks.Callback):
+        def __init__(self):
+            super().__init__()
+            self.feat_model = None
+            self.names = []
+            self.display = functii._KaggleImageDisplay()
+            self.global_step = 0
+            self.t0 = time.time()
+
+        def _build(self):
+            outputs, names = [], []
+            for nume in functii.LAYERE_VIZ:
+                try:
+                    outputs.append(self.model.get_layer(nume).output)
+                    names.append(nume)
+                except ValueError:
+                    pass
+            if not outputs:
+                return False
+            self.feat_model = tf.keras.Model(
+                inputs=self.model.input, outputs=outputs, name="feat_viz",
+            )
+            self.names = names
+            return True
+
+        def on_train_batch_end(self, batch, logs=None):
+            self.global_step += 1
+            if self.global_step % freq_batches != 0:
+                return
+            if self.feat_model is None and not self._build():
+                return
+            try:
+                outs = self.feat_model.predict(x_in, verbose=0)
+                if not isinstance(outs, (list, tuple)):
+                    outs = [outs]
+                activari = {n: a for n, a in zip(self.names, outs)}
+                durata = time.time() - self.t0
+                functii._salveaza_feature_maps_png(
+                    raw, activari, self.global_step,
+                    sample_name, durata, output_path,
+                )
+                self.display.update(output_path)
+            except Exception as exc:
+                print(f"[viz] feature maps step {self.global_step}: {exc}")
+
+    return _CB()
+
+
 # ─── antrenare ───────────────────────────────────────────────────────────────
 
-def _antrenare(model, train_ds, val_ds):
+def _antrenare(model, train_ds, val_ds, sample_img_path=None):
     import tensorflow as tf
 
     callbacks_baza = [
@@ -117,6 +182,15 @@ def _antrenare(model, train_ds, val_ds):
             min_lr=1e-7, verbose=1,
         ),
     ]
+
+    if sample_img_path is not None:
+        feature_maps_path = functii.DATA_OUT / "VGG16_finetune_feature_maps_live.png"
+        callbacks_baza.append(
+            _construieste_callback_feature_maps(
+                sample_img_path, feature_maps_path, freq_batches=25,
+            )
+        )
+        print(f"[viz] feature maps live → {feature_maps_path} (refresh la 25 batch-uri)")
 
     # ── Faza 1: backbone înghețat, antrenăm doar capul ──────────────────────
     print("\n" + "═" * 60)
@@ -282,8 +356,20 @@ def main():
     total_p = model.count_params()
     print(f"[info] model construit: {total_p:,} parametri total")
 
+    # O imagine de referință pentru preview-ul feature maps în timpul antrenării
+    sample_img_path = None
+    for d in sorted(IMAGES.iterdir()):
+        if not d.is_dir():
+            continue
+        for p in sorted(d.iterdir()):
+            if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}:
+                sample_img_path = p
+                break
+        if sample_img_path is not None:
+            break
+
     # Antrenare
-    hist1, hist2 = _antrenare(model, train_ds, val_ds)
+    hist1, hist2 = _antrenare(model, train_ds, val_ds, sample_img_path=sample_img_path)
     _salveaza_grafic_antrenare(hist1, hist2)
 
     # Salvare model (dacă ModelCheckpoint nu a salvat deja cel mai bun)

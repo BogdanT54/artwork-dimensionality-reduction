@@ -37,31 +37,98 @@ def _configureaza_kaggle_config_dir():
              "sau în ./.kaggle/kaggle.json din workspace (chmod 600).")
 
 
+def _repara_mojibake(nume, target_set):
+    """
+    Încearcă să repare un nume de folder corupt de encoding-uri greșite.
+
+    Exemple reale întâlnite cu Albrecht Dürer:
+      • 'Albrecht_DuΓòá├¬rer'   (dublu mojibake cp437 ↔ utf-8)
+      • 'Albrecht_Du╠êrer'      (NFD UTF-8 reinterpretat ca cp437)
+      • 'Albrecht_Dürer'  (NFD pur — combining diaeresis)
+
+    Strategia: încercăm chains de encode(cp437/cp850/cp1252/latin-1) → decode(utf-8)
+    de până la 3 niveluri, plus normalizare NFC, și verificăm dacă rezultatul
+    se potrivește cu un nume așteptat din `artists.csv`.
+    """
+    nfc = unicodedata.normalize("NFC", nume)
+    if nfc in target_set:
+        return nfc
+
+    encodings = ["cp437", "cp850", "cp1252", "latin-1"]
+    seen = {nume}
+    queue = [nume]
+    while queue and len(seen) < 30:
+        current = queue.pop(0)
+        for enc in encodings:
+            try:
+                reparat = current.encode(enc).decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue
+            if reparat in seen:
+                continue
+            seen.add(reparat)
+            nfc = unicodedata.normalize("NFC", reparat)
+            if nfc in target_set:
+                return nfc
+            queue.append(reparat)
+    return None
+
+
 def _normalizeaza_foldere_unicode():
     """
-    Redenumește pe disc orice folder cu encoding NFD → NFC.
-    Kaggle extrage uneori cu NFD (u + combining diacritic în loc de ü compus),
-    ceea ce face ca lookup-ul exact să eșueze pe Linux. Rulat după orice extracție.
+    Repară numele de foldere pe disc:
+      1. NFD → NFC (combining diacritic → caracter compus)
+      2. mojibake (cp437/cp850/cp1252/latin-1 ↔ utf-8) — vezi exemplele Albrecht Dürer
+
+    Folosește `artists.csv` ca referință pentru numele așteptate, ca să poată
+    repara corect chiar și după mai multe nivele de corupere.
     """
     if not IMAGES.exists():
         return
-    redenumite = 0
+
+    target_set = set()
+    if ARTISTS_CSV.exists():
+        df_art = pd.read_csv(ARTISTS_CSV)
+        for nume in df_art["name"]:
+            target_set.add(unicodedata.normalize("NFC", nume.replace(" ", "_")))
+
+    redenumite_nfd = 0
+    redenumite_mojibake = 0
     for d in sorted(IMAGES.iterdir()):
         if not d.is_dir():
             continue
-        nfc = unicodedata.normalize("NFC", d.name)
-        if nfc != d.name:
-            dest = d.parent / nfc
-            if not dest.exists():
-                d.rename(dest)
-                print(f"[unicode] redenumit: {d.name!r} → {nfc!r}")
-                redenumite += 1
-            else:
-                print(f"[unicode] conflict la redenumire {d.name!r} → {nfc!r} (destinatia exista)")
-    if redenumite:
-        print(f"[unicode] {redenumite} foldere redenumite NFD→NFC")
+        original = d.name
+        nfc = unicodedata.normalize("NFC", original)
+
+        target = None
+        motiv = ""
+        if nfc != original and nfc in target_set:
+            target = nfc
+            motiv = "NFD→NFC"
+        elif nfc not in target_set and target_set:
+            reparat = _repara_mojibake(original, target_set)
+            if reparat is not None:
+                target = reparat
+                motiv = "mojibake"
+
+        if target is None or target == original:
+            continue
+
+        dest = d.parent / target
+        if dest.exists():
+            print(f"[unicode] conflict {original!r} → {target!r} (destinația există) — sar peste")
+            continue
+        d.rename(dest)
+        print(f"[unicode] {motiv}: {original!r} → {target!r}")
+        if motiv == "NFD→NFC":
+            redenumite_nfd += 1
+        else:
+            redenumite_mojibake += 1
+
+    if redenumite_nfd or redenumite_mojibake:
+        print(f"[unicode] reparate: {redenumite_nfd} NFD→NFC, {redenumite_mojibake} mojibake")
     else:
-        print("[unicode] toate folderele sunt deja NFC — nicio redenumire necesară")
+        print("[unicode] toate folderele sunt OK — nicio reparare necesară")
 
 
 def _verifica_foldere_dupa_descarcare(df_art):

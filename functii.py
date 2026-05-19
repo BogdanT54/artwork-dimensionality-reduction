@@ -110,6 +110,40 @@ def preprocesare_imagine(path, target_size=(224, 224)):
 LAYERE_VIZ = ("block1_conv2", "block2_conv2", "block3_conv3", "block4_conv3", "block5_conv3")
 
 
+class _KaggleImageDisplay:
+    """
+    Wrapper care actualizează o imagine PNG inline într-un notebook Jupyter/Kaggle.
+
+    Prima oară face `display(...)` cu `display_id=True` și salvează handle-ul.
+    Apelurile ulterioare folosesc `handle.update(...)` care actualizează imaginea
+    în același loc (fără a face scroll), oferind senzația de "live preview".
+
+    În afara unui notebook (CLI/terminal) nu face nimic — silent fallback.
+    """
+
+    def __init__(self):
+        self.handle = None
+        try:
+            from IPython.display import display, Image
+            self._display = display
+            self._Image = Image
+            self.available = True
+        except ImportError:
+            self.available = False
+
+    def update(self, png_path):
+        if not self.available:
+            return
+        try:
+            img = self._Image(filename=str(png_path))
+            if self.handle is None:
+                self.handle = self._display(img, display_id=True)
+            else:
+                self.handle.update(img)
+        except Exception:
+            pass
+
+
 def _diagrama_visualkeras(model, output_path):
     """Salveaza o singura data diagrama 3D-style a VGG16 cu visualkeras."""
     try:
@@ -185,18 +219,20 @@ def _salveaza_feature_maps_png(raw_img, activari, batch_idx, pictor, durata, out
 
 def extragere_cnn_vgg16(image_paths, batch_size=32):
     """
-    Extrage vectori 4096-dim din stratul fc2 al VGG16 cu afișaj live multi-panou.
+    Extrage vectori 4096-dim din stratul fc2 al VGG16.
 
-    Forward pass-ul rulează în mod eager strat-cu-strat (Conv2D → Pool → … → fc2),
-    iar dashboard-ul `rich` actualizează în timp real: bara de batch-uri, bara
-    de strat curent, statistici (pictor, throughput, params/strat, ETA, etapă)
-    și log-ul ultimelor batch-uri finalizate.
+    În terminal (TTY real): dashboard rich.Live multi-panou cu progres live.
+    În Jupyter/Kaggle (non-TTY): tqdm simplu + print periodic — rich.Live nu
+    funcționează în Jupyter deoarece nu este un TTY real și ar printa dashboard-ul
+    complet la fiecare refresh în loc să-l actualizeze în același loc.
 
-    În paralel salvează vizualizări neurale:
-      • data_out/VGG16_arhitectura.png  — diagrama 3D statica (visualkeras)
-      • data_out/VGG16_feature_maps_live.png — feature maps reale, refresh la fiecare 5 batch-uri
+    Vizualizări salvate indiferent de mediu:
+      • data_out/VGG16_arhitectura.png  — diagrama 3D statică (visualkeras)
+      • data_out/VGG16_feature_maps_live.png — feature maps, refresh la fiecare 5 batch-uri
     """
     import gc
+    import os
+    import sys
     import time
     from collections import deque
 
@@ -204,18 +240,12 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
     from tensorflow.keras.applications.vgg16 import VGG16, preprocess_input
     from tensorflow.keras.preprocessing import image
 
-    from rich.console import Console, Group
-    from rich.live import Live
-    from rich.panel import Panel
-    from rich.progress import (
-        BarColumn,
-        Progress,
-        TextColumn,
-        TimeElapsedColumn,
-        TimeRemainingColumn,
+    # rich.Live necesită TTY real; Kaggle Notebooks nu sunt TTY
+    _in_jupyter = (
+        not sys.stdout.isatty()
+        or bool(os.environ.get("KAGGLE_KERNEL_RUN_TYPE"))
+        or bool(os.environ.get("JPY_PARENT_PID"))
     )
-    from rich.table import Table
-    from rich.text import Text
 
     base = VGG16(weights="imagenet", include_top=True)
     layers_lant = []
@@ -238,147 +268,25 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
     features, paths_ok = [], []
     imagini_ok, sarite = 0, 0
     timpi_batch = []
-    log_recent = deque(maxlen=6)
 
-    progres_batch = Progress(
-        TextColumn("[bold cyan]Batch"),
-        BarColumn(bar_width=40, complete_style="cyan", finished_style="green"),
-        TextColumn("[cyan]{task.completed:>3}/{task.total}"),
-        TextColumn("•"),
-        TimeElapsedColumn(),
-        TextColumn("ETA"),
-        TimeRemainingColumn(),
-    )
-    task_batch = progres_batch.add_task("", total=n_batches)
+    if _in_jupyter:
+        # ── Mod Jupyter/Kaggle: tqdm simplu, fără rich.Live ──────────────────
+        try:
+            from tqdm.notebook import tqdm as _tqdm
+        except ImportError:
+            from tqdm import tqdm as _tqdm
 
-    progres_strat = Progress(
-        TextColumn("[bold magenta]Strat"),
-        BarColumn(bar_width=40, complete_style="magenta", finished_style="green"),
-        TextColumn("[magenta]{task.completed:>2}/{task.total}"),
-        TextColumn("[white]{task.description}"),
-    )
-    task_strat = progres_strat.add_task("idle", total=n_straturi)
+        print(f"[info] mod Jupyter detectat — progres tqdm + preview inline")
+        print(f"[info] {n_total} imagini, {n_batches} batch-uri, batch_size={batch_size}")
 
-    stare = {
-        "pictor": "-",
-        "etapa": "asteptare",
-        "layer_nume": "-",
-        "layer_tip": "-",
-        "shape": "-",
-        "params_strat": 0,
-        "throughput": 0.0,
-        "start_total": time.time(),
-    }
-
-    def panou_arhitectura():
-        return Text.from_markup(
-            "[dim]Input[/dim] [cyan]224×224×3[/cyan]  →  "
-            "[yellow]B1[/yellow][dim]:conv64×2·pool[/dim]  →  "
-            "[yellow]B2[/yellow][dim]:conv128×2·pool[/dim]  →  "
-            "[yellow]B3[/yellow][dim]:conv256×3·pool[/dim]  →  "
-            "[yellow]B4[/yellow][dim]:conv512×3·pool[/dim]  →  "
-            "[yellow]B5[/yellow][dim]:conv512×3·pool[/dim]  →  "
-            "[green]Flatten[/green]  →  [green]FC4096[/green]  →  "
-            "[bold green on black] fc2 [/bold green on black]"
-        )
-
-    def panou_stat():
-        tabel = Table.grid(padding=(0, 2))
-        tabel.add_column(style="bold dim", justify="right")
-        tabel.add_column(style="bold white")
-        tabel.add_row("Pictor curent:", f"[cyan]{stare['pictor']}[/cyan]")
-        tabel.add_row("Etapă:", stare["etapa"])
-        tabel.add_row(
-            "Strat activ:",
-            f"[bold]{stare['layer_nume']}[/bold]  "
-            f"[dim]({stare['layer_tip']})[/dim]",
-        )
-        tabel.add_row("Output shape:", f"[yellow]{stare['shape']}[/yellow]")
-        tabel.add_row("Params strat:", f"{stare['params_strat']:,}")
-        tabel.add_row("Imagini OK:", f"{imagini_ok} / {n_total}")
-        tabel.add_row("Sărite:", str(sarite))
-        tabel.add_row("Throughput:", f"{stare['throughput']:.2f} img/s")
-        medie = (sum(timpi_batch) / len(timpi_batch)) if timpi_batch else 0.0
-        tabel.add_row("Medie / batch:", f"{medie:.2f} s")
-        scurs = time.time() - stare["start_total"]
-        tabel.add_row(
-            "Total scurs:",
-            f"{int(scurs // 60):02d}:{int(scurs % 60):02d}",
-        )
-        return tabel
-
-    def panou_viz():
-        tabel = Table.grid(padding=(0, 2))
-        tabel.add_column(style="bold dim", justify="right")
-        tabel.add_column(style="bold white")
-        tabel.add_row("Diagrama 3D:", f"[blue]{diagrama_path}[/blue]")
-        tabel.add_row(
-            "Feature maps live:",
-            f"[blue]{feature_maps_path}[/blue]  [dim](refresh la fiecare 5 batch-uri)[/dim]",
-        )
-        return tabel
-
-    def panou_log():
-        tabel = Table.grid(padding=(0, 1))
-        if log_recent:
-            for linie in log_recent:
-                tabel.add_row(linie)
-        else:
-            tabel.add_row(Text("(niciun batch finalizat încă)", style="dim"))
-        return tabel
-
-    def dashboard():
-        return Group(
-            Panel(
-                panou_arhitectura(),
-                title="VGG16 — arhitectură",
-                border_style="cyan",
-                padding=(0, 1),
-            ),
-            Panel(
-                progres_batch,
-                title=f"Progres total ({n_total} imagini)",
-                border_style="green",
-                padding=(0, 1),
-            ),
-            Panel(
-                progres_strat,
-                title=f"Forward pass — strat activ ({n_straturi} layere până la fc2)",
-                border_style="magenta",
-                padding=(0, 1),
-            ),
-            Panel(
-                panou_stat(),
-                title="Statistici live",
-                border_style="yellow",
-                padding=(0, 1),
-            ),
-            Panel(
-                panou_viz(),
-                title="Vizualizari neurale",
-                border_style="blue",
-                padding=(0, 1),
-            ),
-            Panel(
-                panou_log(),
-                title="Ultimele batch-uri",
-                border_style="dim",
-                padding=(0, 1),
-            ),
-        )
-
-    console = Console()
-    with Live(dashboard(), console=console, refresh_per_second=12) as live:
+        preview = _KaggleImageDisplay()
+        pbar = _tqdm(total=n_batches, desc="VGG16 fc2 extragere", unit="batch")
         for batch_idx, start in enumerate(range(0, n_total, batch_size)):
             batch_paths = image_paths[start : start + batch_size]
-            stare["pictor"] = (
+            pictor = (
                 Path(batch_paths[0]).parent.name.replace("_", " ")
-                if batch_paths
-                else "?"
+                if batch_paths else "?"
             )
-
-            stare["etapa"] = "[cyan]încărcare + preprocesare[/cyan]"
-            live.update(dashboard())
 
             t0 = time.time()
             arr_list, ok_list, raw_list = [], [], []
@@ -389,35 +297,18 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
                     raw_list.append(arr)
                     arr_list.append(arr)
                     ok_list.append(p)
-                except Exception as exc:
+                except Exception:
                     sarite += 1
-                    log_recent.append(
-                        Text.from_markup(f"[red][skip][/red] {Path(p).name}: {exc}")
-                    )
 
             activari_batch = {}
             if arr_list:
                 x = tf.constant(
                     preprocess_input(np.stack(arr_list, axis=0)), dtype=tf.float32
                 )
-                stare["etapa"] = "[magenta]forward pass (eager, strat cu strat)[/magenta]"
-                progres_strat.reset(task_strat, total=n_straturi)
-
-                for li, layer in enumerate(layers_lant):
-                    stare["layer_nume"] = layer.name
-                    stare["layer_tip"] = type(layer).__name__
+                for layer in layers_lant:
                     x = layer(x)
                     if layer.name in LAYERE_VIZ:
                         activari_batch[layer.name] = x.numpy().copy()
-                    stare["shape"] = str(tuple(x.shape))
-                    stare["params_strat"] = int(layer.count_params())
-                    progres_strat.update(
-                        task_strat,
-                        completed=li + 1,
-                        description=f"[bold]{layer.name}[/bold]  "
-                        f"[dim]→ {tuple(x.shape)}[/dim]",
-                    )
-                    live.update(dashboard())
 
                 feats = x.numpy()
                 features.append(feats)
@@ -426,31 +317,25 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
 
             durata = time.time() - t0
             timpi_batch.append(durata)
-            stare["throughput"] = (len(ok_list) / durata) if durata > 0 else 0.0
+            throughput = (len(ok_list) / durata) if durata > 0 else 0.0
+
+            pbar.set_postfix({
+                "pictor": pictor[:18],
+                "img/s": f"{throughput:.1f}",
+                "ok": imagini_ok,
+                "sarite": sarite,
+            })
+            pbar.update(1)
 
             if activari_batch and raw_list and (batch_idx % 5 == 0 or batch_idx == n_batches - 1):
-                stare["etapa"] = "[green]salvare vizualizari[/green]"
-                live.update(dashboard())
                 try:
                     _salveaza_feature_maps_png(
                         raw_list[0], activari_batch, batch_idx + 1,
-                        stare["pictor"], durata, feature_maps_path,
+                        pictor, durata, feature_maps_path,
                     )
+                    preview.update(feature_maps_path)
                 except Exception as exc:
-                    log_recent.append(
-                        Text.from_markup(f"[yellow][viz][/yellow] PNG: {exc}")
-                    )
-            log_recent.append(
-                Text.from_markup(
-                    f"[dim]#{batch_idx + 1:03d}[/dim]  "
-                    f"[cyan]{stare['pictor'][:22]:<22}[/cyan]  "
-                    f"[bold]{durata:5.1f}s[/bold]  "
-                    f"[green]OK[/green] {len(ok_list)} img"
-                )
-            )
-
-            progres_batch.update(task_batch, advance=1)
-            live.update(dashboard())
+                    print(f"[viz] PNG: {exc}")
 
             activari_batch.clear()
             raw_list.clear()
@@ -464,17 +349,232 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
                     np.save(DATA_OUT / "features_partial.npy", partial_arr)
                     with open(DATA_OUT / "paths_partial.txt", "w") as fh:
                         fh.write("\n".join(paths_ok))
-                    log_recent.append(
-                        Text.from_markup(
-                            f"[blue][ckpt][/blue] salvat partial @ batch "
-                            f"{batch_idx + 1}: {partial_arr.shape}"
-                        )
-                    )
+                    print(f"\n[ckpt] salvat partial @ batch {batch_idx + 1}: {partial_arr.shape}")
                     del partial_arr
                 except Exception as exc:
-                    log_recent.append(
-                        Text.from_markup(f"[yellow][ckpt][/yellow] {exc}")
+                    print(f"\n[ckpt] {exc}")
+
+        pbar.close()
+
+    else:
+        # ── Mod terminal: rich.Live dashboard ────────────────────────────────
+        from rich.console import Console, Group
+        from rich.live import Live
+        from rich.panel import Panel
+        from rich.progress import (
+            BarColumn, Progress, TextColumn,
+            TimeElapsedColumn, TimeRemainingColumn,
+        )
+        from rich.table import Table
+        from rich.text import Text
+
+        log_recent = deque(maxlen=6)
+
+        progres_batch = Progress(
+            TextColumn("[bold cyan]Batch"),
+            BarColumn(bar_width=40, complete_style="cyan", finished_style="green"),
+            TextColumn("[cyan]{task.completed:>3}/{task.total}"),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            TextColumn("ETA"),
+            TimeRemainingColumn(),
+        )
+        task_batch = progres_batch.add_task("", total=n_batches)
+
+        progres_strat = Progress(
+            TextColumn("[bold magenta]Strat"),
+            BarColumn(bar_width=40, complete_style="magenta", finished_style="green"),
+            TextColumn("[magenta]{task.completed:>2}/{task.total}"),
+            TextColumn("[white]{task.description}"),
+        )
+        task_strat = progres_strat.add_task("idle", total=n_straturi)
+
+        stare = {
+            "pictor": "-",
+            "etapa": "asteptare",
+            "layer_nume": "-",
+            "layer_tip": "-",
+            "shape": "-",
+            "params_strat": 0,
+            "throughput": 0.0,
+            "start_total": time.time(),
+        }
+
+        def panou_arhitectura():
+            return Text.from_markup(
+                "[dim]Input[/dim] [cyan]224×224×3[/cyan]  →  "
+                "[yellow]B1[/yellow][dim]:conv64×2·pool[/dim]  →  "
+                "[yellow]B2[/yellow][dim]:conv128×2·pool[/dim]  →  "
+                "[yellow]B3[/yellow][dim]:conv256×3·pool[/dim]  →  "
+                "[yellow]B4[/yellow][dim]:conv512×3·pool[/dim]  →  "
+                "[yellow]B5[/yellow][dim]:conv512×3·pool[/dim]  →  "
+                "[green]Flatten[/green]  →  [green]FC4096[/green]  →  "
+                "[bold green on black] fc2 [/bold green on black]"
+            )
+
+        def panou_stat():
+            tabel = Table.grid(padding=(0, 2))
+            tabel.add_column(style="bold dim", justify="right")
+            tabel.add_column(style="bold white")
+            tabel.add_row("Pictor curent:", f"[cyan]{stare['pictor']}[/cyan]")
+            tabel.add_row("Etapă:", stare["etapa"])
+            tabel.add_row(
+                "Strat activ:",
+                f"[bold]{stare['layer_nume']}[/bold]  "
+                f"[dim]({stare['layer_tip']})[/dim]",
+            )
+            tabel.add_row("Output shape:", f"[yellow]{stare['shape']}[/yellow]")
+            tabel.add_row("Params strat:", f"{stare['params_strat']:,}")
+            tabel.add_row("Imagini OK:", f"{imagini_ok} / {n_total}")
+            tabel.add_row("Sărite:", str(sarite))
+            tabel.add_row("Throughput:", f"{stare['throughput']:.2f} img/s")
+            medie = (sum(timpi_batch) / len(timpi_batch)) if timpi_batch else 0.0
+            tabel.add_row("Medie / batch:", f"{medie:.2f} s")
+            scurs = time.time() - stare["start_total"]
+            tabel.add_row(
+                "Total scurs:",
+                f"{int(scurs // 60):02d}:{int(scurs % 60):02d}",
+            )
+            return tabel
+
+        def panou_viz():
+            tabel = Table.grid(padding=(0, 2))
+            tabel.add_column(style="bold dim", justify="right")
+            tabel.add_column(style="bold white")
+            tabel.add_row("Diagrama 3D:", f"[blue]{diagrama_path}[/blue]")
+            tabel.add_row(
+                "Feature maps live:",
+                f"[blue]{feature_maps_path}[/blue]  [dim](refresh la fiecare 5 batch-uri)[/dim]",
+            )
+            return tabel
+
+        def panou_log():
+            tabel = Table.grid(padding=(0, 1))
+            if log_recent:
+                for linie in log_recent:
+                    tabel.add_row(linie)
+            else:
+                tabel.add_row(Text("(niciun batch finalizat încă)", style="dim"))
+            return tabel
+
+        def dashboard():
+            return Group(
+                Panel(panou_arhitectura(), title="VGG16 — arhitectură", border_style="cyan", padding=(0, 1)),
+                Panel(progres_batch, title=f"Progres total ({n_total} imagini)", border_style="green", padding=(0, 1)),
+                Panel(progres_strat, title=f"Forward pass — strat activ ({n_straturi} layere până la fc2)", border_style="magenta", padding=(0, 1)),
+                Panel(panou_stat(), title="Statistici live", border_style="yellow", padding=(0, 1)),
+                Panel(panou_viz(), title="Vizualizari neurale", border_style="blue", padding=(0, 1)),
+                Panel(panou_log(), title="Ultimele batch-uri", border_style="dim", padding=(0, 1)),
+            )
+
+        console = Console()
+        with Live(dashboard(), console=console, refresh_per_second=12) as live:
+            for batch_idx, start in enumerate(range(0, n_total, batch_size)):
+                batch_paths = image_paths[start : start + batch_size]
+                stare["pictor"] = (
+                    Path(batch_paths[0]).parent.name.replace("_", " ")
+                    if batch_paths else "?"
+                )
+
+                stare["etapa"] = "[cyan]încărcare + preprocesare[/cyan]"
+                live.update(dashboard())
+
+                t0 = time.time()
+                arr_list, ok_list, raw_list = [], [], []
+                for p in batch_paths:
+                    try:
+                        img = image.load_img(p, target_size=(224, 224))
+                        arr = image.img_to_array(img)
+                        raw_list.append(arr)
+                        arr_list.append(arr)
+                        ok_list.append(p)
+                    except Exception as exc:
+                        sarite += 1
+                        log_recent.append(
+                            Text.from_markup(f"[red][skip][/red] {Path(p).name}: {exc}")
+                        )
+
+                activari_batch = {}
+                if arr_list:
+                    x = tf.constant(
+                        preprocess_input(np.stack(arr_list, axis=0)), dtype=tf.float32
                     )
+                    stare["etapa"] = "[magenta]forward pass (eager, strat cu strat)[/magenta]"
+                    progres_strat.reset(task_strat, total=n_straturi)
+
+                    for li, layer in enumerate(layers_lant):
+                        stare["layer_nume"] = layer.name
+                        stare["layer_tip"] = type(layer).__name__
+                        x = layer(x)
+                        if layer.name in LAYERE_VIZ:
+                            activari_batch[layer.name] = x.numpy().copy()
+                        stare["shape"] = str(tuple(x.shape))
+                        stare["params_strat"] = int(layer.count_params())
+                        progres_strat.update(
+                            task_strat,
+                            completed=li + 1,
+                            description=f"[bold]{layer.name}[/bold]  "
+                            f"[dim]→ {tuple(x.shape)}[/dim]",
+                        )
+                        live.update(dashboard())
+
+                    feats = x.numpy()
+                    features.append(feats)
+                    paths_ok.extend(ok_list)
+                    imagini_ok += len(ok_list)
+
+                durata = time.time() - t0
+                timpi_batch.append(durata)
+                stare["throughput"] = (len(ok_list) / durata) if durata > 0 else 0.0
+
+                if activari_batch and raw_list and (batch_idx % 5 == 0 or batch_idx == n_batches - 1):
+                    stare["etapa"] = "[green]salvare vizualizari[/green]"
+                    live.update(dashboard())
+                    try:
+                        _salveaza_feature_maps_png(
+                            raw_list[0], activari_batch, batch_idx + 1,
+                            stare["pictor"], durata, feature_maps_path,
+                        )
+                    except Exception as exc:
+                        log_recent.append(
+                            Text.from_markup(f"[yellow][viz][/yellow] PNG: {exc}")
+                        )
+
+                log_recent.append(
+                    Text.from_markup(
+                        f"[dim]#{batch_idx + 1:03d}[/dim]  "
+                        f"[cyan]{stare['pictor'][:22]:<22}[/cyan]  "
+                        f"[bold]{durata:5.1f}s[/bold]  "
+                        f"[green]OK[/green] {len(ok_list)} img"
+                    )
+                )
+
+                progres_batch.update(task_batch, advance=1)
+                live.update(dashboard())
+
+                activari_batch.clear()
+                raw_list.clear()
+                arr_list.clear()
+                if batch_idx % 10 == 0:
+                    gc.collect()
+
+                if (batch_idx + 1) % 50 == 0 and features:
+                    try:
+                        partial_arr = np.vstack(features)
+                        np.save(DATA_OUT / "features_partial.npy", partial_arr)
+                        with open(DATA_OUT / "paths_partial.txt", "w") as fh:
+                            fh.write("\n".join(paths_ok))
+                        log_recent.append(
+                            Text.from_markup(
+                                f"[blue][ckpt][/blue] salvat partial @ batch "
+                                f"{batch_idx + 1}: {partial_arr.shape}"
+                            )
+                        )
+                        del partial_arr
+                    except Exception as exc:
+                        log_recent.append(
+                            Text.from_markup(f"[yellow][ckpt][/yellow] {exc}")
+                        )
 
     medie = float(np.mean(timpi_batch)) if timpi_batch else 0.0
     print(
