@@ -376,6 +376,85 @@ def plot_bar(valori, etichete, fisier, titlu="", x_label="", y_label="", rotatie
     _savefig(fisier)
 
 
+def f_scatter_picturi_3d(scoruri, metadata, by="artist", fisier=None, titlu=None,
+                          comp_x=0, comp_y=1, comp_z=2, alpha=0.45, dim=11,
+                          var_x=None, var_y=None, var_z=None):
+    """
+    Scatter 3D colorat după `by`. Util când 2D nu separă vizibil (PCA, ICA, KPCA);
+    a 3-a componentă poate dezvălui structură ascunsă.
+    """
+    if fisier is None:
+        fisier = f"Scatter3D_{by}.pdf"
+    if titlu is None:
+        titlu = f"Scatter 3D colorat după {by}"
+
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    categorii = sorted(metadata[by].dropna().unique().tolist())
+    n_cat = len(categorii)
+    culori = generare_culori(n_cat)
+
+    fig = plt.figure(figsize=(dim + 2, dim))
+    ax = fig.add_subplot(111, projection="3d")
+
+    for i, cat in enumerate(categorii):
+        mask = (metadata[by] == cat).values
+        ax.scatter(scoruri[mask, comp_x], scoruri[mask, comp_y], scoruri[mask, comp_z],
+                   color=culori[i], alpha=alpha, s=12, edgecolors="none",
+                   label=str(cat) if n_cat <= 20 else None)
+
+    if n_cat > 20:
+        for i, cat in enumerate(categorii):
+            mask = (metadata[by] == cat).values
+            if mask.sum() < 3:
+                continue
+            cx = float(scoruri[mask, comp_x].mean())
+            cy = float(scoruri[mask, comp_y].mean())
+            cz = float(scoruri[mask, comp_z].mean())
+            parts = str(cat).split()
+            short = parts[-1] if len(parts) > 1 else str(cat)
+            ax.text(cx, cy, cz, short, fontsize=6, color=culori[i],
+                    ha="center", va="center", fontweight="bold")
+
+    xlabel = f"Comp{comp_x+1}" + (f"  ({var_x:.1f}%)" if var_x is not None else "")
+    ylabel = f"Comp{comp_y+1}" + (f"  ({var_y:.1f}%)" if var_y is not None else "")
+    zlabel = f"Comp{comp_z+1}" + (f"  ({var_z:.1f}%)" if var_z is not None else "")
+    ax.set_xlabel(xlabel, fontsize=10)
+    ax.set_ylabel(ylabel, fontsize=10)
+    ax.set_zlabel(zlabel, fontsize=10)
+    ax.set_title(titlu, fontsize=12)
+
+    if n_cat <= 20:
+        ax.legend(loc="center left", bbox_to_anchor=(1.05, 0.5),
+                  fontsize=7, framealpha=0.9)
+    _savefig(fisier)
+
+
+def plot_validitate(df_validitate, fisier, titlu="Tabel de validitate"):
+    """Tabel de validitate ca figură: Criteriu | Valoare | Interpretare."""
+    fig, ax = plt.subplots(figsize=(11, max(2, 0.5 + 0.35 * len(df_validitate))))
+    ax.axis("off")
+    tabel = ax.table(
+        cellText=df_validitate.values.tolist(),
+        colLabels=df_validitate.columns.tolist(),
+        loc="center",
+        cellLoc="left",
+        colWidths=[0.25, 0.20, 0.55],
+    )
+    tabel.auto_set_font_size(False)
+    tabel.set_fontsize(9)
+    tabel.scale(1, 1.4)
+    for k, c in tabel.get_celld().items():
+        c.set_edgecolor("#cccccc")
+        if k[0] == 0:
+            c.set_facecolor("#4a7ab9")
+            c.set_text_props(color="white", fontweight="bold")
+        elif k[0] % 2 == 0:
+            c.set_facecolor("#f5f5f5")
+    ax.set_title(titlu, fontsize=12, pad=10)
+    _savefig(fisier)
+
+
 def plot_scatter_grid(panouri, fisier, suptitlu=""):
     """
     Grid de scatter-uri pentru comparație cross-metode.

@@ -1,4 +1,4 @@
-"""Pas 1: PCA — varianță, eigenpicturi semantice, corelograma, scatter 4 coloraje."""
+"""Pas 1: PCA — varianță, eigenpicturi semantice, corelograma, scatter 4 coloraje + 3D."""
 import numpy as np
 import pandas as pd
 
@@ -17,30 +17,59 @@ def _citeste():
     return df, x, metadata
 
 
+def _construieste_validitate(e, n_total, n_features):
+    """Tabel de validitate PCA: criterii standard + interpretare."""
+    var_first2 = float(e["varianta_ratio"][:2].sum()) * 100
+    var_first3 = float(e["varianta_ratio"][:3].sum()) * 100
+    rows = [
+        {"Criteriu": "Kaiser (eigenvalue > 1)",
+         "Valoare": f"{e['n_kaiser']} componente",
+         "Interpretare": "Componente cu varianță peste medie"},
+        {"Criteriu": "Prag 80% varianță cumulativă",
+         "Valoare": f"{e['n_80']} componente",
+         "Interpretare": "Nr. minim pentru a reține 80% din info"},
+        {"Criteriu": "Elbow scree",
+         "Valoare": f"{e['n_elbow']} componente",
+         "Interpretare": "Punct de cot al scree plot-ului"},
+        {"Criteriu": "Varianță explicată Comp1+Comp2",
+         "Valoare": f"{var_first2:.2f}%",
+         "Interpretare": "Cât din info se vede în scatter 2D"},
+        {"Criteriu": "Varianță explicată Comp1+Comp2+Comp3",
+         "Valoare": f"{var_first3:.2f}%",
+         "Interpretare": "Cât din info se vede în scatter 3D"},
+        {"Criteriu": "Dimensiune originală",
+         "Valoare": f"{n_features} features",
+         "Interpretare": "VGG16 fc2 (4096) pe {} imagini".format(n_total)},
+    ]
+    return pd.DataFrame(rows)
+
+
 def main():
+    pasi = functii.Pasi("PCA", total=5)
     functii.goleste_data_out(subdir=SUBDIR)
     grafice.set_subdir(SUBDIR)
     OUT = functii.subdir(SUBDIR)
 
+    pasi.pas("Citire features_cnn.csv")
     df, x, metadata = _citeste()
-    print(f"[info] PCA pe X = {x.shape}  →  data_out/{SUBDIR}/")
+    pasi.info(f"X = {x.shape}  →  data_out/{SUBDIR}/")
 
+    pasi.pas(f"Fit PCA (n_max=150 componente)")
     rez = reducere_dim.aplica_pca(df, x, metadata, n_max=150)
     e = rez.extra
+    pasi.info(f"Kaiser: {e['n_kaiser']} | 80%: {e['n_80']} | Elbow: {e['n_elbow']}")
 
+    pasi.pas("Salvare scoruri / corelații / varianță")
     tabel_var = functii.tabelare_varianta(e["varianta_ratio"])
     tabel_var.to_csv(OUT / "Varianta_PCA.csv")
-
     pd.DataFrame(rez.scoruri,
                  columns=[f"Comp{i+1}" for i in range(rez.scoruri.shape[1])]
                  ).assign(**{c: metadata[c] for c in META_COLS}).to_csv(
         OUT / "Scoruri_PCA.csv", index=False)
-
     n_show = min(20, e["corelatii"].shape[1])
     pd.DataFrame(e["corelatii"][:, :n_show],
                  columns=[f"Comp{i+1}" for i in range(n_show)]
                  ).to_csv(OUT / "r_xc_PCA.csv")
-
     raport = pd.DataFrame({
         "Criteriu": ["Kaiser (>1)", "Prag 80% varianță", "Elbow scree"],
         "Nr componente": [e["n_kaiser"], e["n_80"], e["n_elbow"]],
@@ -48,6 +77,14 @@ def main():
     raport.to_csv(OUT / "Selectie_PCA.csv", index=False)
     print(raport.to_string(index=False))
 
+    pasi.pas("Tabel de validitate")
+    df_val = _construieste_validitate(e, len(metadata), x.shape[1])
+    functii.salveaza_validitate(df_val, SUBDIR, "Validitate_PCA.csv")
+    grafice.plot_validitate(df_val, "Validitate_PCA.pdf",
+                            titlu="Validitate PCA — criterii de selecție")
+    print(df_val.to_string(index=False))
+
+    pasi.pas("Grafice (varianță, scree, corelograma, scatter 2D+3D, eigenpicturi)")
     grafice.plot_varianta(e["varianta_cum"], "Varianta_PCA.pdf",
                           n_kaiser=e["n_kaiser"], n_elbow=e["n_elbow"])
     grafice.plot_elbow(e["varianta_ratio"], k_optim=e["n_elbow"],
@@ -63,12 +100,18 @@ def main():
                                   "Eigenpicturi_PCA.pdf", n_comp=6, k=5)
     var_x_pct = float(e["varianta_ratio"][0]) * 100
     var_y_pct = float(e["varianta_ratio"][1]) * 100
+    var_z_pct = float(e["varianta_ratio"][2]) * 100
     for by in ["artist", "stil", "epoca", "gen"]:
         grafice.f_scatter_picturi(rez.scoruri, metadata, by=by,
                                   fisier=f"Scatter_PCA_{by}.pdf",
                                   titlu=f"PCA — scatter pe {by}",
                                   var_x=var_x_pct, var_y=var_y_pct)
+        grafice.f_scatter_picturi_3d(rez.scoruri, metadata, by=by,
+                                      fisier=f"Scatter3D_PCA_{by}.pdf",
+                                      titlu=f"PCA 3D — primele 3 componente colorate pe {by}",
+                                      var_x=var_x_pct, var_y=var_y_pct, var_z=var_z_pct)
     grafice.show()
+    pasi.terminat()
 
 
 if __name__ == "__main__":

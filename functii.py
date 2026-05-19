@@ -33,6 +33,56 @@ def subdir(name):
     return p
 
 
+class Pasi:
+    """
+    Helper pentru output structurat pas-cu-pas în mainurile metodelor.
+
+    Folosire:
+        pasi = functii.Pasi("PCA", total=5)
+        pasi.pas("Citire date")
+        ...
+        pasi.pas("Fit model")
+        ...
+        pasi.terminat()
+    """
+
+    def __init__(self, nume_metoda, total):
+        import time
+        self.nume = nume_metoda
+        self.total = total
+        self.curent = 0
+        self.t_start = time.time()
+        self.t_pas = time.time()
+        bar = "═" * 60
+        print(f"\n{bar}\n  Metoda {self.nume}\n{bar}")
+
+    def pas(self, descriere):
+        import time
+        if self.curent > 0:
+            dt = time.time() - self.t_pas
+            print(f"      [✓] {dt:.1f}s")
+        self.curent += 1
+        self.t_pas = time.time()
+        print(f"  [{self.curent}/{self.total}] {descriere}...")
+
+    def info(self, mesaj):
+        print(f"        ↳ {mesaj}")
+
+    def terminat(self):
+        import time
+        dt = time.time() - self.t_pas
+        print(f"      [✓] {dt:.1f}s")
+        total = time.time() - self.t_start
+        print(f"  [OK] {self.nume} finalizat în {total:.1f}s\n")
+
+
+def salveaza_validitate(df_validitate, subfolder, nume_fisier="Validitate.csv"):
+    """Salvează tabelul de validitate ca CSV în data_out/<subfolder>/."""
+    out = subdir(subfolder) / nume_fisier
+    df_validitate.to_csv(out, index=False)
+    return out
+
+
 def salvare_ndarray(arr, nume_fisier, header=None, index=None):
     """Salvează un ndarray ca CSV în data_out/."""
     df = pd.DataFrame(arr)

@@ -116,7 +116,7 @@ def aplica_nmf(df, x, metadata, q_list=(5, 10, 15, 20, 30, 50)):
     erori = []
     rezultate = {}
     for q in q_list:
-        model = NMF(n_components=q, init="nndsvd", max_iter=400, random_state=42)
+        model = NMF(n_components=q, init="nndsvd", max_iter=1000, random_state=42)
         W = model.fit_transform(x)
         H = model.components_
         reconstr = W @ H
@@ -144,7 +144,7 @@ def aplica_ica(df, x, metadata, k):
     scaler = StandardScaler()
     x_std = scaler.fit_transform(x)
 
-    ica = FastICA(n_components=k, random_state=42, max_iter=500, whiten="unit-variance")
+    ica = FastICA(n_components=k, random_state=42, max_iter=1000, whiten="unit-variance")
     scoruri = ica.fit_transform(x_std)
     df_ent = functii.calcul_entropie_ica(scoruri)
     return RezultatReducere(
@@ -172,11 +172,14 @@ def aplica_kpca(df, x, metadata, kernel="rbf", n_components=20, gamma=None):
     pca_ref = PCA(n_components=n_components)
     scoruri_pca = pca_ref.fit_transform(x_std)
 
+    gamma_efectiv = gamma if gamma is not None else 1.0 / x_std.shape[1]
     return RezultatReducere(
         nume="KPCA",
         scoruri=scoruri,
         extra={
             "kernel": kernel,
+            "gamma": gamma,
+            "gamma_efectiv": gamma_efectiv,
             "scoruri_pca_referinta": scoruri_pca,
             "eigenvalues": getattr(kpca, "eigenvalues_", None),
             "model": kpca,
