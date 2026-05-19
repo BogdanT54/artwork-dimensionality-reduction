@@ -17,6 +17,7 @@ DATA_IN = functii.DATA_IN
 IMAGES = DATA_IN / "images"
 ARTISTS_CSV = DATA_IN / "artists.csv"
 FEATURES_CSV = DATA_IN / "features_cnn.csv"
+FINETUNED_MODEL = DATA_IN / "vgg16_finetuned.keras"
 
 
 def _configureaza_kaggle_config_dir():
@@ -229,6 +230,17 @@ def colecteaza_paths_si_metadata():
 def main():
     descarca_kaggle()
 
+    # Detectare model fine-tuned
+    model_path = FINETUNED_MODEL if FINETUNED_MODEL.exists() else None
+    if model_path:
+        print(f"[info] model fine-tuned detectat: {model_path}")
+        print("[info] features_cnn.csv va fi RE-GENERAT cu greutăți fine-tuned.")
+        if FEATURES_CSV.exists():
+            FEATURES_CSV.unlink()
+            print("[info] features_cnn.csv vechi (ImageNet) șters — regenerare cu model fine-tuned.")
+    else:
+        print("[info] model fine-tuned negăsit — se folosesc greutăți ImageNet.")
+
     if FEATURES_CSV.exists():
         size_mb = FEATURES_CSV.stat().st_size / 1e6
         print(f"[OK] {FEATURES_CSV} deja există ({size_mb:.1f} MB) — sar peste extragere.")
@@ -240,7 +252,9 @@ def main():
         sys.exit("[eroare] niciun fișier imagine găsit.")
 
     print("[info] extragere VGG16 fc2 ...")
-    features, paths_ok = functii.extragere_cnn_vgg16(df_paths["path"].tolist(), batch_size=32)
+    features, paths_ok = functii.extragere_cnn_vgg16(
+        df_paths["path"].tolist(), batch_size=32, model_path=model_path
+    )
     print(f"[OK] features shape = {features.shape}")
 
     df_paths_ok = df_paths.set_index("path").loc[paths_ok].reset_index()

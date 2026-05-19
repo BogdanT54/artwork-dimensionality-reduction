@@ -299,9 +299,12 @@ def _salveaza_feature_maps_png(raw_img, activari, batch_idx, pictor, durata, out
 
 
 
-def extragere_cnn_vgg16(image_paths, batch_size=32):
+def extragere_cnn_vgg16(image_paths, batch_size=32, model_path=None):
     """
     Extrage vectori 4096-dim din stratul fc2 al VGG16 folosind GPU (dacă disponibil).
+
+    model_path: dacă este specificat, încarcă modelul fine-tuned din acel fișier .keras
+                în loc de greutățile ImageNet. Stratul fc2 trebuie să existe în model.
 
     Folosește model.predict() în loc de loop eager layer-cu-layer — TensorFlow
     compilează întregul forward pass ca un singur kernel GPU, mult mai rapid.
@@ -340,7 +343,14 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
         or bool(os.environ.get("JPY_PARENT_PID"))
     )
 
-    base = VGG16(weights="imagenet", include_top=True)
+    if model_path is not None:
+        from tensorflow.keras.models import load_model as _load_model
+        print(f"[info] încărcare model fine-tuned: {model_path}")
+        base = _load_model(str(model_path))
+        print(f"[info] model fine-tuned încărcat — folosesc stratul fc2")
+    else:
+        base = VGG16(weights="imagenet", include_top=True)
+        print("[info] folosesc VGG16 cu greutăți ImageNet")
 
     # Model principal: input → fc2 (rulează întreg forward pass pe GPU)
     feat_model = Model(
