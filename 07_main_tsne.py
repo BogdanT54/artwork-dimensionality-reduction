@@ -96,6 +96,12 @@ def main():
         plt.tight_layout()
         plt.savefig(OUT / f"Grid_tSNE_{by}.pdf", format="pdf", bbox_inches="tight")
         plt.close(fig)
+    for perp in perplexity_list:
+        scoruri_perp = e["rezultate_per_perp"][perp]["scoruri"]
+        for by in ["artist", "stil", "epoca", "gen"]:
+            grafice.f_scatter_interactiv_2d(scoruri_perp, metadata, by=by,
+                                             fisier=f"Scatter_tSNE_perp{perp}_{by}.html",
+                                             titlu=f"t-SNE perp={perp} — scatter 2D pe {by}")
     pasi.pas("Scatter 3D t-SNE (perplexity=50)")
     scoruri_3d = e.get("scoruri_3d")
     perp_3d = e.get("perp_3d", 50)
@@ -132,6 +138,9 @@ def main():
             plt.savefig(OUT / f"Scatter3D_tSNE_perp{perp_3d}_{by}.pdf",
                         format="pdf", bbox_inches="tight")
             plt.close(fig)
+            grafice.f_scatter_interactiv_3d(scoruri_3d, metadata, by=by,
+                                             fisier=f"Scatter3D_tSNE_perp{perp_3d}_{by}.html",
+                                             titlu=f"t-SNE 3D (perp={perp_3d}) — pe {by}")
         pasi.info(f"Scatter 3D generat pentru perp={perp_3d} × 4 coloraje")
     else:
         pasi.info("3D indisponibil (perp_3d=None)")

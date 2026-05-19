@@ -485,3 +485,66 @@ def plot_scatter_grid(panouri, fisier, suptitlu=""):
         fig.suptitle(suptitlu, fontsize=12)
     plt.tight_layout()
     _savefig(fisier)
+
+
+def _build_hover_df(scoruri, metadata, n_dim):
+    """Pregătește DataFrame pentru plotly cu coloanele de hover."""
+    cols = {}
+    for i in range(n_dim):
+        cols[f"d{i+1}"] = scoruri[:, i]
+    for c in ["artist", "stil", "epoca", "gen", "path"]:
+        if c in metadata.columns:
+            valori = metadata[c].astype(str).values
+            if c == "path":
+                valori = [p.split("/")[-1] for p in valori]
+            cols[c] = valori
+    return pd.DataFrame(cols)
+
+
+def f_scatter_interactiv_2d(scoruri, metadata, by, fisier, titlu,
+                             comp_x=0, comp_y=1):
+    """
+    Scatter 2D interactiv (plotly) cu hover tooltip: artist, stil, epoca, gen, path.
+    Salvat ca HTML — deschis în browser sau inline în Kaggle/Jupyter.
+    """
+    import plotly.express as px
+
+    df_plot = _build_hover_df(scoruri[:, [comp_x, comp_y]], metadata, 2)
+    df_plot.columns = ["x", "y"] + list(df_plot.columns[2:])
+
+    hover_cols = [c for c in ["artist", "stil", "epoca", "gen", "path"] if c in df_plot.columns]
+    fig = px.scatter(
+        df_plot, x="x", y="y", color=by,
+        hover_data=hover_cols,
+        title=titlu, opacity=0.7,
+    )
+    fig.update_traces(marker=dict(size=6))
+    fig.update_layout(width=1100, height=750, legend=dict(itemsizing="constant"))
+
+    target_dir = DATA_OUT / _SUBDIR if _SUBDIR else DATA_OUT
+    target_dir.mkdir(parents=True, exist_ok=True)
+    fig.write_html(str(target_dir / fisier), include_plotlyjs="cdn")
+
+
+def f_scatter_interactiv_3d(scoruri, metadata, by, fisier, titlu,
+                             comp_x=0, comp_y=1, comp_z=2):
+    """
+    Scatter 3D interactiv (plotly) — rotire, zoom, hover tooltip cu detalii pictură.
+    """
+    import plotly.express as px
+
+    df_plot = _build_hover_df(scoruri[:, [comp_x, comp_y, comp_z]], metadata, 3)
+    df_plot.columns = ["x", "y", "z"] + list(df_plot.columns[3:])
+
+    hover_cols = [c for c in ["artist", "stil", "epoca", "gen", "path"] if c in df_plot.columns]
+    fig = px.scatter_3d(
+        df_plot, x="x", y="y", z="z", color=by,
+        hover_data=hover_cols,
+        title=titlu, opacity=0.7,
+    )
+    fig.update_traces(marker=dict(size=3))
+    fig.update_layout(width=1100, height=850, legend=dict(itemsizing="constant"))
+
+    target_dir = DATA_OUT / _SUBDIR if _SUBDIR else DATA_OUT
+    target_dir.mkdir(parents=True, exist_ok=True)
+    fig.write_html(str(target_dir / fisier), include_plotlyjs="cdn")

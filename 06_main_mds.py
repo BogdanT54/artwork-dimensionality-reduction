@@ -128,6 +128,17 @@ def main():
         plt.savefig(OUT / "Scatter3D_MDS_pictori.pdf", format="pdf", bbox_inches="tight")
         plt.close(fig3)
 
+    meta_mds = pd.DataFrame({"artist": e["etichete"]})
+    for c in ["stil", "epoca", "gen", "path"]:
+        meta_mds[c] = ""
+    grafice.f_scatter_interactiv_2d(sc2, meta_mds, by="artist",
+                                     fisier="Scatter_MDS_pictori.html",
+                                     titlu="MDS 2D interactiv — pictori")
+    if sc3 is not None:
+        grafice.f_scatter_interactiv_3d(sc3, meta_mds, by="artist",
+                                         fisier="Scatter3D_MDS_pictori.html",
+                                         titlu="MDS 3D interactiv — pictori")
+
     grafice.show()
     pasi.terminat()
 

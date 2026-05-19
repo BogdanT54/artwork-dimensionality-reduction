@@ -143,6 +143,20 @@ def main():
             grafice.f_scatter_picturi_3d(e["scoruri_pca_referinta"], meta_s, by=by,
                                           fisier=f"Scatter3D_PCA_ref_{by}.pdf",
                                           titlu=f"PCA liniar 3D (ref KPCA) — pe {by}")
+        grafice.f_scatter_interactiv_2d(rez.scoruri, meta_s, by=by,
+                                         fisier=f"Scatter_KPCA_{by}.html",
+                                         titlu=f"KPCA RBF — scatter 2D pe {by}")
+        if rez.scoruri.shape[1] >= 3:
+            grafice.f_scatter_interactiv_3d(rez.scoruri, meta_s, by=by,
+                                             fisier=f"Scatter3D_KPCA_{by}.html",
+                                             titlu=f"KPCA RBF 3D pe {by}")
+        grafice.f_scatter_interactiv_2d(e["scoruri_pca_referinta"], meta_s, by=by,
+                                         fisier=f"Scatter_PCA_ref_{by}.html",
+                                         titlu=f"PCA liniar (ref KPCA) — 2D pe {by}")
+        if e["scoruri_pca_referinta"].shape[1] >= 3:
+            grafice.f_scatter_interactiv_3d(e["scoruri_pca_referinta"], meta_s, by=by,
+                                             fisier=f"Scatter3D_PCA_ref_{by}.html",
+                                             titlu=f"PCA liniar (ref KPCA) — 3D pe {by}")
     grafice.show()
     pasi.terminat()
 

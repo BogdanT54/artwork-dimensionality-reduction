@@ -11,3 +11,4 @@ tqdm
 rich
 visualkeras
 aggdraw
+plotly

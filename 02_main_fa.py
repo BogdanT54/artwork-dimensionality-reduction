@@ -114,6 +114,13 @@ def main():
             grafice.f_scatter_picturi_3d(rez.scoruri, metadata, by=by,
                                           fisier=f"Scatter3D_FA_{by}.pdf",
                                           titlu=f"FA 3D — primii 3 factori pe {by}")
+        grafice.f_scatter_interactiv_2d(rez.scoruri, metadata, by=by,
+                                         fisier=f"Scatter_FA_{by}.html",
+                                         titlu=f"FA — scatter 2D pe {by}")
+        if rez.scoruri.shape[1] >= 3:
+            grafice.f_scatter_interactiv_3d(rez.scoruri, metadata, by=by,
+                                             fisier=f"Scatter3D_FA_{by}.html",
+                                             titlu=f"FA 3D — pe {by}")
     pasi.pas("Grafice suplimentare: varianță per factor + cercul corelațiilor FA")
     var_arr = np.array(e["varianta"])
     # Bar chart: varianță explicată per factor

@@ -90,6 +90,13 @@ def main():
             grafice.f_scatter_picturi_3d(rez.scoruri, metadata, by=by,
                                           fisier=f"Scatter3D_ICA_{by}.pdf",
                                           titlu=f"ICA 3D — primele 3 IC pe {by}")
+        grafice.f_scatter_interactiv_2d(rez.scoruri, metadata, by=by,
+                                         fisier=f"Scatter_ICA_{by}.html",
+                                         titlu=f"ICA — scatter 2D pe {by}")
+        if rez.scoruri.shape[1] >= 3:
+            grafice.f_scatter_interactiv_3d(rez.scoruri, metadata, by=by,
+                                             fisier=f"Scatter3D_ICA_{by}.html",
+                                             titlu=f"ICA 3D — pe {by}")
     paths = metadata["path"].values
     n_show = min(4, rez.scoruri.shape[1])
     abs_sc = np.abs(rez.scoruri)

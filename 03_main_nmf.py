@@ -94,6 +94,13 @@ def main():
             grafice.f_scatter_picturi_3d(W, metadata, by=by,
                                           fisier=f"Scatter3D_NMF_{by}.pdf",
                                           titlu=f"NMF 3D (q={e['q_optim']}) — pe {by}")
+        grafice.f_scatter_interactiv_2d(W, metadata, by=by,
+                                         fisier=f"Scatter_NMF_{by}.html",
+                                         titlu=f"NMF (q={e['q_optim']}) — scatter 2D pe {by}")
+        if W.shape[1] >= 3:
+            grafice.f_scatter_interactiv_3d(W, metadata, by=by,
+                                             fisier=f"Scatter3D_NMF_{by}.html",
+                                             titlu=f"NMF 3D (q={e['q_optim']}) — pe {by}")
     pasi.pas("Corelograma H matrix (corelații features-componente NMF)")
     # H are forma (q, n_features); selectăm top-80 features cu cea mai mare variație în H
     top_var_H = np.argsort(-H.var(axis=0))[:80]

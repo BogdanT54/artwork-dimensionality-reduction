@@ -110,6 +110,13 @@ def main():
                                       fisier=f"Scatter3D_PCA_{by}.pdf",
                                       titlu=f"PCA 3D — primele 3 componente colorate pe {by}",
                                       var_x=var_x_pct, var_y=var_y_pct, var_z=var_z_pct)
+        grafice.f_scatter_interactiv_2d(rez.scoruri, metadata, by=by,
+                                         fisier=f"Scatter_PCA_{by}.html",
+                                         titlu=f"PCA — scatter 2D pe {by}")
+        if rez.scoruri.shape[1] >= 3:
+            grafice.f_scatter_interactiv_3d(rez.scoruri, metadata, by=by,
+                                             fisier=f"Scatter3D_PCA_{by}.html",
+                                             titlu=f"PCA 3D — primele 3 componente pe {by}")
     grafice.show()
     pasi.terminat()
 
