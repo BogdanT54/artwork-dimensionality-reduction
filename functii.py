@@ -112,17 +112,19 @@ LAYERE_VIZ = ("block1_conv2", "block2_conv2", "block3_conv3", "block4_conv3", "b
 
 class _KaggleImageDisplay:
     """
-    Wrapper care actualizează o imagine PNG inline într-un notebook Jupyter/Kaggle.
+    Actualizează o imagine PNG inline în Jupyter/Kaggle fără scroll.
 
-    Prima oară face `display(...)` cu `display_id=True` și salvează handle-ul.
-    Apelurile ulterioare folosesc `handle.update(...)` care actualizează imaginea
-    în același loc (fără a face scroll), oferind senzația de "live preview".
+    Folosește `ipywidgets.Output` — o zonă izolată de output care poate fi
+    cleared + redisplayed fără a afecta tqdm sau alte outputs din celulă.
+    `display_id` nu funcționează în Kaggle (kernelul printează repr în loc
+    să randeze imaginea), deci îl evităm complet.
 
-    În afara unui notebook (CLI/terminal) nu face nimic — silent fallback.
+    În terminal (non-Jupyter) nu face nimic — silent fallback.
     """
 
     def __init__(self):
-        self.handle = None
+        self._widget = None   # ipywidgets.Output, inițializat lazy
+        self._disabled = False
         try:
             from IPython.display import display, Image
             self._display = display
@@ -131,15 +133,28 @@ class _KaggleImageDisplay:
         except ImportError:
             self.available = False
 
+    def _init_widget(self):
+        try:
+            import ipywidgets as widgets
+            self._widget = widgets.Output(
+                layout=widgets.Layout(width="100%")
+            )
+            self._display(self._widget)
+        except Exception:
+            self._disabled = True
+
     def update(self, png_path):
-        if not self.available:
+        if not self.available or self._disabled:
+            return
+        if self._widget is None:
+            self._init_widget()
+        if self._disabled:
             return
         try:
             img = self._Image(filename=str(png_path))
-            if self.handle is None:
-                self.handle = self._display(img, display_id=True)
-            else:
-                self.handle.update(img)
+            self._widget.clear_output(wait=True)
+            with self._widget:
+                self._display(img)
         except Exception:
             pass
 

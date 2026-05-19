@@ -116,7 +116,17 @@ def _normalizeaza_foldere_unicode():
 
         dest = d.parent / target
         if dest.exists():
-            print(f"[unicode] conflict {original!r} → {target!r} (destinația există) — sar peste")
+            # Destinația există deja (corectă) — folderul corupt e gol sau duplicat, ștergem
+            import shutil
+            try:
+                if d.is_dir() and not any(d.iterdir()):
+                    d.rmdir()
+                    print(f"[unicode] șters folder gol corupt: {original!r}")
+                else:
+                    shutil.rmtree(str(d))
+                    print(f"[unicode] șters folder corupt (cu conținut mutat deja): {original!r}")
+            except Exception as exc:
+                print(f"[unicode] nu pot șterge {original!r}: {exc}")
             continue
         d.rename(dest)
         print(f"[unicode] {motiv}: {original!r} → {target!r}")
