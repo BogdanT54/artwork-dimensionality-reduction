@@ -43,7 +43,7 @@ def _construieste_validitate(e, x_shape, x_min):
 
 
 def main():
-    pasi = functii.Pasi("NMF", total=5)
+    pasi = functii.Pasi("NMF", total=6)
     functii.goleste_data_out(subdir=SUBDIR)
     grafice.set_subdir(SUBDIR)
     OUT = functii.subdir(SUBDIR)
@@ -94,6 +94,19 @@ def main():
             grafice.f_scatter_picturi_3d(W, metadata, by=by,
                                           fisier=f"Scatter3D_NMF_{by}.pdf",
                                           titlu=f"NMF 3D (q={e['q_optim']}) — pe {by}")
+    pasi.pas("Corelograma H matrix (corelații features-componente NMF)")
+    # H are forma (q, n_features); selectăm top-80 features cu cea mai mare variație în H
+    top_var_H = np.argsort(-H.var(axis=0))[:80]
+    H_sub = H[:, top_var_H]
+    grafice.corelograma(
+        pd.DataFrame(H_sub,
+                     index=[f"C{i+1}" for i in range(H.shape[0])],
+                     columns=[f"f{j+1}" for j in top_var_H]),
+        "H_Matrix_NMF.pdf",
+        "NMF: matricea H (top 80 features cu variație maximă între componente)",
+        vmin=float(H_sub.min()), vmax=float(H_sub.max()), cmap="YlOrRd"
+    )
+    pasi.info(f"H matrix corelograma: {H.shape[0]}×80 features salvată")
     grafice.show()
     pasi.terminat()
 

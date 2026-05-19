@@ -51,7 +51,7 @@ def _construieste_validitate(e, n_obs, n_features):
 
 
 def main():
-    pasi = functii.Pasi("FA (Analiză Factorială)", total=5)
+    pasi = functii.Pasi("FA (Analiză Factorială)", total=6)
     functii.goleste_data_out(subdir=SUBDIR)
     grafice.set_subdir(SUBDIR)
     OUT = functii.subdir(SUBDIR)
@@ -114,6 +114,23 @@ def main():
             grafice.f_scatter_picturi_3d(rez.scoruri, metadata, by=by,
                                           fisier=f"Scatter3D_FA_{by}.pdf",
                                           titlu=f"FA 3D — primii 3 factori pe {by}")
+    pasi.pas("Grafice suplimentare: varianță per factor + cercul corelațiilor FA")
+    var_arr = np.array(e["varianta"])
+    # Bar chart: varianță explicată per factor
+    grafice.plot_bar(
+        var_arr[1] * 100,  # proportii ca procente
+        [f"F{i+1}" for i in range(e["n_factori"])],
+        "Varianta_per_Factor_FA.pdf",
+        titlu="Varianță explicată per factor FA (%)",
+        x_label="Factor", y_label="% din varianța totală"
+    )
+    # Cerc corelații FA: loadings pe primii 2 factori
+    grafice.plot_scoruri_corelatii(
+        e["loadings"],
+        "Cercul_Corelatii_FA.pdf",
+        titlu="Cercul corelațiilor FA (loadings factori 1 și 2)"
+    )
+    pasi.info(f"Grafice adăugate: varianță per factor, cerc corelații FA")
     grafice.show()
     pasi.terminat()
 

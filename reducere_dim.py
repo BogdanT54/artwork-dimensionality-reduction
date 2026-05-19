@@ -231,7 +231,7 @@ def aplica_mds(df, x, metadata, coloana_grup="artist", q_list=(2, 3, 4, 5, 6, 8,
     )
 
 
-def aplica_tsne(df, x, metadata, perplexity_list=(5, 30, 50, 100), n_pca=50):
+def aplica_tsne(df, x, metadata, perplexity_list=(5, 30, 50, 100), n_pca=50, perp_3d=50):
     """t-SNE 2D pe primele n_pca componente PCA (pipeline standard)."""
     scaler = StandardScaler()
     x_std = scaler.fit_transform(x)
@@ -249,6 +249,13 @@ def aplica_tsne(df, x, metadata, perplexity_list=(5, 30, 50, 100), n_pca=50):
             "kl_divergence": float(tsne.kl_divergence_),
         }
 
+    # 3D t-SNE pentru perp_3d (folosit în 07_main_tsne.py)
+    scoruri_3d = None
+    if perp_3d is not None:
+        tsne_3d = TSNE(n_components=3, perplexity=perp_3d, random_state=42,
+                       init="pca", max_iter=1000, learning_rate="auto")
+        scoruri_3d = tsne_3d.fit_transform(x_pca)
+
     return RezultatReducere(
         nume="tSNE",
         scoruri=rezultate[perplexity_list[0]]["scoruri"],
@@ -256,5 +263,7 @@ def aplica_tsne(df, x, metadata, perplexity_list=(5, 30, 50, 100), n_pca=50):
             "perplexity_list": list(perplexity_list),
             "rezultate_per_perp": rezultate,
             "n_pca_intermediar": n_pca,
+            "scoruri_3d": scoruri_3d,
+            "perp_3d": perp_3d,
         },
     )

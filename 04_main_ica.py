@@ -43,7 +43,7 @@ def _construieste_validitate(e, k, n_obs):
 
 
 def main():
-    pasi = functii.Pasi("ICA", total=5)
+    pasi = functii.Pasi("ICA", total=6)
     functii.goleste_data_out(subdir=SUBDIR)
     grafice.set_subdir(SUBDIR)
     OUT = functii.subdir(SUBDIR)
@@ -100,6 +100,35 @@ def main():
                                   f"Top_picturi_IC{c+1}.pdf",
                                   suptitlu=f"ICA componenta {c+1} — top 5 picturi cu activare maximă",
                                   n_cols=5)
+    pasi.pas("Corelații IC — independență + corelații cu features originale")
+    # Matrice corelații între IC (ar trebui să fie aproape de identitate)
+    corr_ic = np.corrcoef(rez.scoruri.T)
+    grafice.corelograma(
+        pd.DataFrame(corr_ic,
+                     index=[f"IC{i+1}" for i in range(k)],
+                     columns=[f"IC{i+1}" for i in range(k)]),
+        "Corelatii_IC.pdf",
+        "Matrice corelații IC (independență — diagonal = 1, rest ≈ 0)",
+        vmin=-1, vmax=1
+    )
+    pd.DataFrame(corr_ic,
+                 index=[f"IC{i+1}" for i in range(k)],
+                 columns=[f"IC{i+1}" for i in range(k)]).to_csv(OUT / "Corelatii_IC.csv")
+    # Corelații IC cu top-100 features originale (varianță maximă)
+    from sklearn.preprocessing import StandardScaler
+    x_std_ica = StandardScaler().fit_transform(x)
+    var_feat = x_std_ica.var(axis=0)
+    top_feat_idx = np.argsort(-var_feat)[:100]
+    corr_ic_feat = np.corrcoef(rez.scoruri.T, x_std_ica[:, top_feat_idx].T)[:k, k:]
+    grafice.corelograma(
+        pd.DataFrame(corr_ic_feat,
+                     index=[f"IC{i+1}" for i in range(k)],
+                     columns=[f"f{i+1}" for i in top_feat_idx]),
+        "Corelatii_IC_Features.pdf",
+        "Corelații IC vs top-100 features (varianță maximă)",
+        vmin=-1, vmax=1
+    )
+    pasi.info(f"Matrice {k}×{k} corelații IC + {k}×100 corelații IC-features salvate")
     grafice.show()
     pasi.terminat()
 

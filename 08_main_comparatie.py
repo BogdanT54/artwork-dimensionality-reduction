@@ -48,6 +48,7 @@ def main():
         ("ica",  "Scoruri_ICA.csv",          ["IC1", "IC2"],     "ICA"),
         ("kpca", "Scoruri_KPCA.csv",         ["K1", "K2"],       "KPCA RBF"),
         ("tsne", "Scoruri_tSNE_perp30.csv",  ["t1", "t2"],       "t-SNE perp=30"),
+        ("tsne", "Scoruri_tSNE_perp50.csv", ["t1", "t2"], "t-SNE perp=50"),
     ]
     panouri = []
     scoruri_incarcate = {}
