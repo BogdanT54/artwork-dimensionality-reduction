@@ -199,6 +199,7 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
       • data_out/VGG16_feature_maps_live.png — feature maps reale, refresh/batch
       • logs/vgg16_extraction/<ts>/ — log TensorBoard (deschide cu `tensorboard --logdir logs`)
     """
+    import gc
     import time
     from collections import deque
 
@@ -440,7 +441,7 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
             timpi_batch.append(durata)
             stare["throughput"] = (len(ok_list) / durata) if durata > 0 else 0.0
 
-            if activari_batch and raw_list:
+            if activari_batch and raw_list and (batch_idx % 5 == 0 or batch_idx == n_batches - 1):
                 stare["etapa"] = "[green]salvare vizualizari[/green]"
                 live.update(dashboard())
                 try:
@@ -453,10 +454,11 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
                         Text.from_markup(f"[yellow][viz][/yellow] PNG: {exc}")
                     )
                 try:
-                    _log_tensorboard(
-                        tb_writer, raw_list, activari_batch, batch_idx + 1,
-                        durata, stare["throughput"], sarite,
-                    )
+                    if batch_idx % 20 == 0 or batch_idx == n_batches - 1:
+                        _log_tensorboard(
+                            tb_writer, raw_list, activari_batch, batch_idx + 1,
+                            durata, stare["throughput"], sarite,
+                        )
                 except Exception as exc:
                     log_recent.append(
                         Text.from_markup(f"[yellow][viz][/yellow] TB: {exc}")
@@ -472,6 +474,30 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
 
             progres_batch.update(task_batch, advance=1)
             live.update(dashboard())
+
+            activari_batch.clear()
+            raw_list.clear()
+            arr_list.clear()
+            if batch_idx % 10 == 0:
+                gc.collect()
+
+            if (batch_idx + 1) % 50 == 0 and features:
+                try:
+                    partial_arr = np.vstack(features)
+                    np.save(DATA_OUT / "features_partial.npy", partial_arr)
+                    with open(DATA_OUT / "paths_partial.txt", "w") as fh:
+                        fh.write("\n".join(paths_ok))
+                    log_recent.append(
+                        Text.from_markup(
+                            f"[blue][ckpt][/blue] salvat partial @ batch "
+                            f"{batch_idx + 1}: {partial_arr.shape}"
+                        )
+                    )
+                    del partial_arr
+                except Exception as exc:
+                    log_recent.append(
+                        Text.from_markup(f"[yellow][ckpt][/yellow] {exc}")
+                    )
 
     medie = float(np.mean(timpi_batch)) if timpi_batch else 0.0
     print(

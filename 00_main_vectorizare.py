@@ -114,6 +114,13 @@ def colecteaza_paths_si_metadata():
 
 def main():
     descarca_kaggle()
+
+    if FEATURES_CSV.exists():
+        size_mb = FEATURES_CSV.stat().st_size / 1e6
+        print(f"[OK] {FEATURES_CSV} deja există ({size_mb:.1f} MB) — sar peste extragere.")
+        print(f"[info] sterge manual fisierul daca vrei sa re-extragi: rm {FEATURES_CSV}")
+        return
+
     df_paths = colecteaza_paths_si_metadata()
     if len(df_paths) == 0:
         sys.exit("[eroare] niciun fișier imagine găsit.")
@@ -128,7 +135,11 @@ def main():
     df_out = pd.concat([df_paths_ok.reset_index(drop=True),
                         df_feat.reset_index(drop=True)], axis=1)
     DATA_IN.mkdir(parents=True, exist_ok=True)
-    df_out.to_csv(FEATURES_CSV, index=False)
+
+    # Scrie atomic: temp file -> rename. Un crash mid-write nu poate corupe CSV-ul.
+    temp_csv = FEATURES_CSV.with_suffix(".csv.tmp")
+    df_out.to_csv(temp_csv, index=False)
+    temp_csv.replace(FEATURES_CSV)
     print(f"[OK] salvat {FEATURES_CSV} cu shape {df_out.shape}")
 
 
