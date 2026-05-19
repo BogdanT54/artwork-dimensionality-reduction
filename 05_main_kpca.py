@@ -7,41 +7,42 @@ import grafice
 import reducere_dim
 
 META_COLS = ["path", "artist", "stil", "epoca", "gen"]
+SUBDIR = "kpca"
 
 
 def main():
-    functii.goleste_data_out(tokens=["_KPCA.", "Scoruri_KPCA",
-                                       "Scoruri_PCA_referinta_KPCA",
-                                       "Comparatie_KPCA_PCA"])
+    functii.goleste_data_out(subdir=SUBDIR)
+    grafice.set_subdir(SUBDIR)
+    OUT = functii.subdir(SUBDIR)
+
     df = pd.read_csv(functii.DATA_IN / "features_cnn.csv")
     metadata = df[META_COLS].copy()
     x = df.drop(columns=META_COLS).values.astype(np.float32)
 
-    # KPCA O(n²) memory → subsampling stratificat la max 2000 instanțe pentru tractabilitate
     n = len(metadata)
     if n > 2000:
         sub_idx = (metadata.groupby("artist", group_keys=False)
                    .apply(lambda g: g.sample(min(len(g), max(1, 2000 // metadata["artist"].nunique())),
-                                              random_state=42))
+                                              random_state=42),
+                          include_groups=False)
                    ).index.values
         sub_idx = np.array(sub_idx)
     else:
         sub_idx = np.arange(n)
     x_s = x[sub_idx]
     meta_s = metadata.iloc[sub_idx].reset_index(drop=True)
-    print(f"[info] KPCA pe sub-eșantion {x_s.shape}")
+    print(f"[info] KPCA pe sub-eșantion {x_s.shape}  →  data_out/{SUBDIR}/")
 
     rez = reducere_dim.aplica_kpca(df, x_s, meta_s, kernel="rbf", n_components=20)
     e = rez.extra
 
     pd.DataFrame(rez.scoruri, columns=[f"K{i+1}" for i in range(rez.scoruri.shape[1])]
                  ).assign(**{c: meta_s[c] for c in META_COLS}).to_csv(
-        functii.DATA_OUT / "Scoruri_KPCA.csv", index=False)
+        OUT / "Scoruri_KPCA.csv", index=False)
     pd.DataFrame(e["scoruri_pca_referinta"], columns=[f"C{i+1}" for i in range(20)]
                  ).assign(**{c: meta_s[c] for c in META_COLS}).to_csv(
-        functii.DATA_OUT / "Scoruri_PCA_referinta_KPCA.csv", index=False)
+        OUT / "Scoruri_PCA_referinta_KPCA.csv", index=False)
 
-    # comparație vizuală side-by-side: PCA liniar vs Kernel PCA pe 4 coloraje
     import matplotlib.pyplot as plt
     for by in ["artist", "stil", "epoca", "gen"]:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 9))
@@ -61,7 +62,7 @@ def main():
             if len(categorii) <= 30:
                 ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=6)
         plt.tight_layout()
-        plt.savefig(functii.DATA_OUT / f"Comparatie_KPCA_PCA_{by}.pdf",
+        plt.savefig(OUT / f"Comparatie_KPCA_PCA_{by}.pdf",
                     format="pdf", bbox_inches="tight")
         plt.close(fig)
     grafice.show()

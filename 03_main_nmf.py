@@ -7,31 +7,34 @@ import grafice
 import reducere_dim
 
 META_COLS = ["path", "artist", "stil", "epoca", "gen"]
+SUBDIR = "nmf"
 
 
 def main():
-    functii.goleste_data_out(tokens=["_NMF.", "Erori_NMF", "W_NMF", "H_NMF",
-                                       "Elbow_NMF", "Componente_NMF", "Scatter_NMF"])
+    functii.goleste_data_out(subdir=SUBDIR)
+    grafice.set_subdir(SUBDIR)
+    OUT = functii.subdir(SUBDIR)
+
     df = pd.read_csv(functii.DATA_IN / "features_cnn.csv")
     metadata = df[META_COLS].copy()
     x = df.drop(columns=META_COLS).values.astype(np.float32)
-    print(f"[info] NMF (VGG16 fc2 ≥ 0); X = {x.shape}, min = {x.min():.4f}")
+    print(f"[info] NMF (VGG16 fc2 ≥ 0); X = {x.shape}, min = {x.min():.4f}  →  data_out/{SUBDIR}/")
 
     q_list = [5, 10, 15, 20, 30, 50]
     rez = reducere_dim.aplica_nmf(df, x, metadata, q_list=q_list)
     e = rez.extra
 
     pd.DataFrame({"q": e["q_list"], "Eroare_Frobenius": e["erori"]}
-                 ).to_csv(functii.DATA_OUT / "Erori_NMF.csv", index=False)
+                 ).to_csv(OUT / "Erori_NMF.csv", index=False)
     print(f"[info] q optim Elbow = {e['q_optim']}")
 
     W = e["rezultate_per_q"][e["q_optim"]]["W"]
     H = e["H_optim"]
     pd.DataFrame(W, columns=[f"C{i+1}" for i in range(W.shape[1])]
                  ).assign(**{c: metadata[c] for c in META_COLS}).to_csv(
-        functii.DATA_OUT / "W_NMF.csv", index=False)
+        OUT / "W_NMF.csv", index=False)
     pd.DataFrame(H, index=[f"C{i+1}" for i in range(H.shape[0])]
-                 ).to_csv(functii.DATA_OUT / "H_NMF.csv")
+                 ).to_csv(OUT / "H_NMF.csv")
 
     grafice.plot_elbow(e["erori"], k_optim=e["q_list"].index(e["q_optim"]) + 1,
                        fisier="Elbow_NMF.pdf", titlu="Eroare reconstrucție NMF",

@@ -9,6 +9,15 @@ import pandas as pd
 import seaborn as sns
 
 DATA_OUT = Path("data_out")
+_SUBDIR = ""  # setat de set_subdir() per main script
+
+
+def set_subdir(name):
+    """Setează subfolderul curent (ex. 'pca'); toate plot-urile vor merge în data_out/<name>/."""
+    global _SUBDIR
+    _SUBDIR = name or ""
+    if _SUBDIR:
+        (DATA_OUT / _SUBDIR).mkdir(parents=True, exist_ok=True)
 
 
 def show():
@@ -52,8 +61,9 @@ def _ellipsa_confidenta(ax, x_vals, y_vals, color, n_std=1.7, alpha_fill=0.10):
 
 
 def _savefig(fisier):
-    DATA_OUT.mkdir(parents=True, exist_ok=True)
-    plt.savefig(DATA_OUT / fisier, format="pdf", bbox_inches="tight")
+    target_dir = DATA_OUT / _SUBDIR if _SUBDIR else DATA_OUT
+    target_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(target_dir / fisier, format="pdf", bbox_inches="tight")
 
 
 def plot_varianta(varianta_cum, fisier="Varianta_PCA.pdf", titlu="Varianță explicată cumulativă",

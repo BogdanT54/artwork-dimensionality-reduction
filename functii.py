@@ -10,18 +10,27 @@ DATA_OUT = Path("data_out")
 DATA_IN = Path("data_in") / "best_artworks"
 
 
-def goleste_data_out(tokens=None):
+def goleste_data_out(tokens=None, subdir=None):
     """
-    Asigură existența data_out/. Dacă `tokens` e None: șterge tot (mod profesor).
-    Dacă `tokens` e lista de substring-uri: șterge doar fișierele care conțin oricare token —
-    astfel fiecare main_X.py poate șterge doar propriile outputuri, fără să afecteze celelalte.
+    Asigură existența data_out/[subdir]/. Reguli:
+      - subdir=None, tokens=None: șterge toate fișierele din data_out/ (mod profesor)
+      - subdir=None, tokens=[...]: șterge doar fișierele din data_out/ care matchează tokens
+      - subdir="pca": șterge tot conținutul din data_out/pca/
     """
-    DATA_OUT.mkdir(parents=True, exist_ok=True)
-    for fisier in DATA_OUT.iterdir():
+    target = DATA_OUT if subdir is None else DATA_OUT / subdir
+    target.mkdir(parents=True, exist_ok=True)
+    for fisier in target.iterdir():
         if not fisier.is_file():
             continue
-        if tokens is None or any(t in fisier.name for t in tokens):
+        if subdir is not None or tokens is None or any(t in fisier.name for t in tokens):
             fisier.unlink()
+
+
+def subdir(name):
+    """Creează (dacă lipsește) și returnează data_out/<name>/."""
+    p = DATA_OUT / name
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def salvare_ndarray(arr, nume_fisier, header=None, index=None):
@@ -114,24 +123,32 @@ class _KaggleImageDisplay:
     """
     Actualizează o imagine PNG inline în Jupyter/Kaggle fără scroll.
 
-    Folosește `ipywidgets.Output` — o zonă izolată de output care poate fi
-    cleared + redisplayed fără a afecta tqdm sau alte outputs din celulă.
-    `display_id` nu funcționează în Kaggle (kernelul printează repr în loc
-    să randeze imaginea), deci îl evităm complet.
+    Folosește `ipywidgets.Output` — o zonă izolată care poate fi cleared
+    și redisplayed fără să afecteze tqdm sau alte outputs din aceeași celulă.
 
-    În terminal (non-Jupyter) nu face nimic — silent fallback.
+    IMPORTANT: dezactivat când scriptul rulează ca subprocess (`!python x.py`
+    din Kaggle). În subprocess nu există kernel IPython, deci `display()` ar
+    printa `<IPython.core.display.Image object>` ca text în loc să randeze.
     """
 
     def __init__(self):
-        self._widget = None   # ipywidgets.Output, inițializat lazy
+        self._widget = None
         self._disabled = False
+        self.available = False
         try:
+            from IPython import get_ipython
             from IPython.display import display, Image
+            ipy = get_ipython()
+            # ipy is None pentru subprocess sau Python standalone
+            # Verifică explicit că suntem într-un kernel Jupyter/IPython interactiv
+            if ipy is None or "IPKernelApp" not in getattr(ipy, "config", {}):
+                self._disabled = True
+                return
             self._display = display
             self._Image = Image
             self.available = True
         except ImportError:
-            self.available = False
+            self._disabled = True
 
     def _init_widget(self):
         try:
