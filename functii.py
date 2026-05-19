@@ -59,6 +59,42 @@ def nan_replace_df(df):
     return df
 
 
+def colecteaza_paths_si_metadata():
+    """Returnează DataFrame cu coloanele: path, artist, stil, epoca, gen."""
+    import sys
+    import unicodedata
+    IMAGES = DATA_IN / "images"
+    ARTISTS_CSV = DATA_IN / "artists.csv"
+    if not ARTISTS_CSV.exists():
+        sys.exit(f"[eroare] {ARTISTS_CSV} lipsește.")
+    df_art = pd.read_csv(ARTISTS_CSV)
+    df_art["folder"] = df_art["name"].str.replace(" ", "_", regex=False)
+    df_art["epoca"] = df_art["years"].apply(deriva_epoca)
+    df_art["stil"] = df_art["genre"].apply(deriva_stil)
+    folder_map = {
+        unicodedata.normalize("NFC", d.name): d
+        for d in IMAGES.iterdir() if d.is_dir()
+    }
+    rows = []
+    extensii = {".jpg", ".jpeg", ".png", ".bmp"}
+    for _, row in df_art.iterrows():
+        folder = folder_map.get(unicodedata.normalize("NFC", row["folder"]))
+        if folder is None:
+            continue
+        for p in sorted(folder.iterdir()):
+            if p.suffix.lower() in extensii:
+                rows.append({
+                    "path": str(p),
+                    "artist": row["name"],
+                    "stil": row["stil"],
+                    "epoca": row["epoca"],
+                    "gen": row.get("nationality", "necunoscut"),
+                })
+    df_paths = pd.DataFrame(rows)
+    print(f"[info] {len(df_paths)} imagini găsite")
+    return df_paths
+
+
 def preprocesare_imagine(path, target_size=(224, 224)):
     """Încarcă o imagine și o pregătește pentru VGG16 (resize + preprocess_input)."""
     from tensorflow.keras.preprocessing import image

@@ -146,45 +146,7 @@ def descarca_kaggle():
 
 
 def colecteaza_paths_si_metadata():
-    """Returnează DataFrame cu coloanele: path, artist, stil, epoca, gen."""
-    if not ARTISTS_CSV.exists():
-        sys.exit(f"[eroare] {ARTISTS_CSV} lipsește.")
-    df_art = pd.read_csv(ARTISTS_CSV)
-    print(f"[info] {len(df_art)} pictori în artists.csv")
-
-    # name în artists.csv: "Vincent van Gogh"; foldere: "Vincent_van_Gogh"
-    df_art["folder"] = df_art["name"].str.replace(" ", "_", regex=False)
-    df_art["epoca"] = df_art["years"].apply(functii.deriva_epoca)
-    df_art["stil"] = df_art["genre"].apply(functii.deriva_stil)
-
-    # Construieste lookup NFC(nume_folder) -> cale reala pentru a gestiona
-    # diferentele de normalizare Unicode (NFD pe disc vs NFC in CSV).
-    folder_map = {
-        unicodedata.normalize("NFC", d.name): d
-        for d in IMAGES.iterdir()
-        if d.is_dir()
-    }
-
-    rows = []
-    extensii = {".jpg", ".jpeg", ".png", ".bmp"}
-    for _, row in df_art.iterrows():
-        folder_nfc = unicodedata.normalize("NFC", row["folder"])
-        folder = folder_map.get(folder_nfc)
-        if folder is None:
-            print(f"[warn] folderul lipsește: {IMAGES / row['folder']}")
-            continue
-        for p in sorted(folder.iterdir()):
-            if p.suffix.lower() in extensii:
-                rows.append({
-                    "path": str(p),
-                    "artist": row["name"],
-                    "stil": row["stil"],
-                    "epoca": row["epoca"],
-                    "gen": row.get("nationality", "necunoscut"),
-                })
-    df_paths = pd.DataFrame(rows)
-    print(f"[info] {len(df_paths)} imagini găsite")
-    return df_paths
+    return functii.colecteaza_paths_si_metadata()
 
 
 def main():
