@@ -33,9 +33,9 @@ def _construieste_validitate(e, n_obs):
         {"Criteriu": "Observații",
          "Valoare": f"{n_obs}",
          "Interpretare": "Imagini procesate"},
-        {"Criteriu": "Notă 3D",
-         "Valoare": "Neaplicabil",
-         "Interpretare": "t-SNE produce 2D (n_components=2 fix în această analiză)"},
+        {"Criteriu": "t-SNE 3D",
+         "Valoare": f"perplexity={e.get('perp_3d', 50)}",
+         "Interpretare": "Calculat separat cu n_components=3; scatter 3D generat per coloraj"},
     ]
     return pd.DataFrame(rows)
 
