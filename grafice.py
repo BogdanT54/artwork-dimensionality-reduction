@@ -3,6 +3,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+from matplotlib.patches import Ellipse
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -24,23 +25,78 @@ def generare_culori(n):
     return base[:n]
 
 
+def _ellipsa_confidenta(ax, x_vals, y_vals, color, n_std=1.7, alpha_fill=0.10):
+    """Elipsă de confidență bazată pe PCA al norului de puncte (≈ 90% CI pt n_std=1.7)."""
+    if len(x_vals) < 5:
+        return
+    try:
+        cov = np.cov(x_vals, y_vals)
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+        order = eigenvalues.argsort()[::-1]
+        eigenvalues = eigenvalues[order]
+        eigenvectors = eigenvectors[:, order]
+        if np.any(eigenvalues <= 0):
+            return
+        angle = np.degrees(np.arctan2(*eigenvectors[:, 0][::-1]))
+        width = 2 * n_std * np.sqrt(eigenvalues[0])
+        height = 2 * n_std * np.sqrt(eigenvalues[1])
+        ell = Ellipse(
+            xy=(float(np.mean(x_vals)), float(np.mean(y_vals))),
+            width=width, height=height, angle=angle,
+            facecolor=color, alpha=alpha_fill,
+            edgecolor=color, linewidth=1.2, linestyle="--",
+        )
+        ax.add_patch(ell)
+    except Exception:
+        pass
+
+
 def _savefig(fisier):
     DATA_OUT.mkdir(parents=True, exist_ok=True)
     plt.savefig(DATA_OUT / fisier, format="pdf", bbox_inches="tight")
 
 
-def plot_varianta(varianta_cum, fisier="Varianta_PCA.pdf", titlu="Varianță explicată cumulativă"):
-    """Bar + line cu varianța cumulativă PCA și prag 80%."""
+def plot_varianta(varianta_cum, fisier="Varianta_PCA.pdf", titlu="Varianță explicată cumulativă",
+                  n_kaiser=None, n_elbow=None):
+    """Bar + line cu varianța cumulativă PCA și prag 80%, cu markere Kaiser/Elbow."""
     var_cum = np.asarray(varianta_cum)
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(13, 6))
     x = np.arange(1, len(var_cum) + 1)
-    ax.bar(x, np.diff(np.concatenate(([0], var_cum))), color="steelblue", alpha=0.6, label="Varianță componentă")
-    ax.plot(x, var_cum, "o-", color="crimson", label="Cumulativă")
-    ax.axhline(0.8, color="green", linestyle="--", label="Prag 80%")
-    ax.set_xlabel("Componenta principală")
-    ax.set_ylabel("Procent varianță")
-    ax.set_title(titlu)
-    ax.legend()
+    var_ind = np.diff(np.concatenate(([0], var_cum)))
+    ax.bar(x, var_ind, color="steelblue", alpha=0.5, label="Varianță componentă", zorder=2)
+    ax.plot(x, var_cum, "o-", color="crimson", markersize=4, linewidth=1.8,
+            label="Cumulativă", zorder=3)
+    ax.axhline(0.8, color="green", linestyle="--", linewidth=1.5, label="Prag 80%", zorder=4)
+
+    if n_kaiser is not None:
+        ax.axvline(n_kaiser, color="purple", linestyle=":", linewidth=1.5,
+                   label=f"Kaiser: {n_kaiser} comp.", zorder=4)
+    if n_elbow is not None:
+        ax.axvline(n_elbow, color="darkorange", linestyle=":", linewidth=1.5,
+                   label=f"Elbow: {n_elbow} comp.", zorder=4)
+
+    if var_cum[-1] >= 0.80:
+        idx_80 = int(np.searchsorted(var_cum, 0.80))
+        ax.annotate(
+            f"80% la comp. {idx_80 + 1}",
+            xy=(idx_80 + 1, 0.80), xytext=(idx_80 + max(3, len(x) // 10), 0.74),
+            arrowprops=dict(arrowstyle="->", color="green", lw=1.4),
+            color="green", fontsize=9,
+        )
+    else:
+        ax.text(
+            0.98, 0.84,
+            f"80% necesită > {len(var_cum)} componente\n"
+            f"(acoperire actuală: {var_cum[-1] * 100:.1f}% din varianță)",
+            transform=ax.transAxes, ha="right", va="bottom",
+            color="darkgreen", fontsize=9,
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="#f0fff0", alpha=0.9, edgecolor="green"),
+        )
+
+    ax.set_xlabel("Componenta principală", fontsize=11)
+    ax.set_ylabel("Procent varianță", fontsize=11)
+    ax.set_title(titlu, fontsize=13)
+    ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
     _savefig(fisier)
 
@@ -97,30 +153,66 @@ def plot_scoruri_corelatii(corelatii, fisier="Cercul_corelatiilor.pdf", titlu="C
 
 
 def f_scatter_picturi(scoruri, metadata, by="artist", fisier=None, titlu=None,
-                       comp_x=0, comp_y=1, alpha=0.7, dim=8):
+                       comp_x=0, comp_y=1, alpha=0.35, dim=9,
+                       var_x=None, var_y=None):
     """
-    Scatter 2D pe primele două componente, colorat după coloana `by` din metadata.
-    `metadata` este un DataFrame cu coloana `by`.
+    Scatter 2D colorat după `by`, cu elipse de confidență per categorie și
+    etichete la centroid. Axele arată % varianță dacă var_x/var_y sunt date.
     """
     if fisier is None:
         fisier = f"Scatter_{by}.pdf"
     if titlu is None:
         titlu = f"Scatter colorat după {by}"
+
     categorii = sorted(metadata[by].dropna().unique().tolist())
-    culori = generare_culori(len(categorii))
+    n_cat = len(categorii)
+    culori = generare_culori(n_cat)
+
     fig, ax = plt.subplots(figsize=(dim + 4, dim))
+
+    # 1. Elipse de confidență (desenate primele, în spatele punctelor)
     for i, cat in enumerate(categorii):
         mask = (metadata[by] == cat).values
+        if mask.sum() < 5:
+            continue
+        _ellipsa_confidenta(ax, scoruri[mask, comp_x], scoruri[mask, comp_y], culori[i])
+
+    # 2. Puncte
+    for i, cat in enumerate(categorii):
+        mask = (metadata[by] == cat).values
+        cnt = mask.sum()
+        lbl = f"{cat} ({cnt})" if n_cat <= 20 else str(cat)
         ax.scatter(scoruri[mask, comp_x], scoruri[mask, comp_y],
-                   color=culori[i], label=str(cat), alpha=alpha, s=18, edgecolors="none")
-    ax.set_xlabel(f"Comp{comp_x+1}")
-    ax.set_ylabel(f"Comp{comp_y+1}")
-    ax.set_title(titlu)
-    if len(categorii) <= 30:
-        ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=7, ncol=1)
-    else:
-        ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=6, ncol=2)
-    ax.grid(True, alpha=0.3)
+                   color=culori[i], label=lbl, alpha=alpha, s=15, edgecolors="none", zorder=3)
+
+    # 3. Etichete centroid
+    for i, cat in enumerate(categorii):
+        mask = (metadata[by] == cat).values
+        if mask.sum() < 3:
+            continue
+        cx = float(scoruri[mask, comp_x].mean())
+        cy = float(scoruri[mask, comp_y].mean())
+        # Pentru multe categorii: doar ultima parte din nume (ex. "van Gogh" din "Vincent van Gogh")
+        if n_cat > 20:
+            parts = str(cat).split()
+            short = parts[-1] if len(parts) > 1 else str(cat)
+        else:
+            short = str(cat)
+        ax.text(cx, cy, short, fontsize=6 if n_cat > 20 else 7,
+                color=culori[i], ha="center", va="center", fontweight="bold", zorder=4,
+                bbox=dict(boxstyle="round,pad=0.15", facecolor="white",
+                          alpha=0.75, edgecolor="none"))
+
+    xlabel = f"Comp{comp_x + 1}" + (f"  ({var_x:.1f}% varianță)" if var_x is not None else "")
+    ylabel = f"Comp{comp_y + 1}" + (f"  ({var_y:.1f}% varianță)" if var_y is not None else "")
+    ax.set_xlabel(xlabel, fontsize=11)
+    ax.set_ylabel(ylabel, fontsize=11)
+    ax.set_title(titlu, fontsize=13)
+
+    ncol = 1 if n_cat <= 25 else 2
+    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5),
+              fontsize=6 if n_cat > 25 else 7, ncol=ncol, framealpha=0.9)
+    ax.grid(True, alpha=0.2)
     _savefig(fisier)
 
 

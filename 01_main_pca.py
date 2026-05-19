@@ -24,7 +24,7 @@ def main():
     df, x, metadata = _citeste()
     print(f"[info] PCA pe X = {x.shape}")
 
-    rez = reducere_dim.aplica_pca(df, x, metadata, n_max=50)
+    rez = reducere_dim.aplica_pca(df, x, metadata, n_max=150)
     e = rez.extra
 
     # tabele
@@ -49,7 +49,8 @@ def main():
     print(raport.to_string(index=False))
 
     # grafice
-    grafice.plot_varianta(e["varianta_cum"], "Varianta_PCA.pdf")
+    grafice.plot_varianta(e["varianta_cum"], "Varianta_PCA.pdf",
+                          n_kaiser=e["n_kaiser"], n_elbow=e["n_elbow"])
     grafice.plot_elbow(e["varianta_ratio"], k_optim=e["n_elbow"],
                        fisier="Elbow_PCA.pdf", titlu="Scree plot PCA",
                        x_label="Componentă", y_label="Procent varianță")
@@ -62,10 +63,13 @@ def main():
     grafice.plot_scoruri_corelatii(e["corelatii"], "Cercul_PCA.pdf")
     grafice.plot_eigenpicturi_pca(rez.scoruri, metadata["path"].values,
                                   "Eigenpicturi_PCA.pdf", n_comp=6, k=5)
+    var_x_pct = float(e["varianta_ratio"][0]) * 100
+    var_y_pct = float(e["varianta_ratio"][1]) * 100
     for by in ["artist", "stil", "epoca", "gen"]:
         grafice.f_scatter_picturi(rez.scoruri, metadata, by=by,
                                   fisier=f"Scatter_PCA_{by}.pdf",
-                                  titlu=f"PCA — scatter pe {by}")
+                                  titlu=f"PCA — scatter pe {by}",
+                                  var_x=var_x_pct, var_y=var_y_pct)
     grafice.show()
 
 
