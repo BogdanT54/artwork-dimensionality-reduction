@@ -94,21 +94,6 @@ def _diagrama_visualkeras(model, output_path):
         return False
 
 
-def _setup_tensorboard(root="logs/vgg16_extraction"):
-    """Initializeaza un FileWriter TensorBoard cu timestamp. Returneaza (writer, log_dir)."""
-    try:
-        import datetime
-        import tensorflow as tf
-        log_dir = Path(root) / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_dir.mkdir(parents=True, exist_ok=True)
-        writer = tf.summary.create_file_writer(str(log_dir))
-        print(f"[viz] TensorBoard logs: {log_dir}")
-        print(f"[viz] porneste: tensorboard --logdir {root} --port 6006")
-        return writer, log_dir
-    except Exception as exc:
-        print(f"[viz] TensorBoard indisponibil ({exc})")
-        return None, None
-
 
 def _salveaza_feature_maps_png(raw_img, activari, batch_idx, pictor, durata, output_path):
     """Salveaza PNG cu input + 8 feature maps per layer din LAYERE_VIZ (5 layere)."""
@@ -161,29 +146,6 @@ def _salveaza_feature_maps_png(raw_img, activari, batch_idx, pictor, durata, out
     plt.close(fig)
 
 
-def _log_tensorboard(writer, raw_batch, activari, batch_idx, durata, throughput, sarite):
-    """Scrie imagini + feature maps + histograme + scalari in TensorBoard."""
-    if writer is None:
-        return
-    import tensorflow as tf
-    with writer.as_default():
-        if raw_batch:
-            imgs = np.stack(raw_batch[: min(4, len(raw_batch))], axis=0) / 255.0
-            tf.summary.image("input/imagini_originale", imgs, max_outputs=4, step=batch_idx)
-        for nume_strat, act in activari.items():
-            n_canale = min(8, act.shape[-1])
-            sample = act[0:1, :, :, :n_canale]
-            sample = tf.transpose(sample, [3, 1, 2, 0])
-            tf.summary.image(
-                f"feature_maps/{nume_strat}",
-                sample, max_outputs=n_canale, step=batch_idx,
-            )
-            tf.summary.histogram(f"activari/{nume_strat}", act, step=batch_idx)
-        tf.summary.scalar("perf/timp_batch_s", durata, step=batch_idx)
-        tf.summary.scalar("perf/throughput_img_per_s", throughput, step=batch_idx)
-        tf.summary.scalar("perf/sarite_cumulat", sarite, step=batch_idx)
-    writer.flush()
-
 
 def extragere_cnn_vgg16(image_paths, batch_size=32):
     """
@@ -196,8 +158,7 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
 
     În paralel salvează vizualizări neurale:
       • data_out/VGG16_arhitectura.png  — diagrama 3D statica (visualkeras)
-      • data_out/VGG16_feature_maps_live.png — feature maps reale, refresh/batch
-      • logs/vgg16_extraction/<ts>/ — log TensorBoard (deschide cu `tensorboard --logdir logs`)
+      • data_out/VGG16_feature_maps_live.png — feature maps reale, refresh la fiecare 5 batch-uri
     """
     import gc
     import time
@@ -233,7 +194,6 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
     diagrama_path = DATA_OUT / "VGG16_arhitectura.png"
     feature_maps_path = DATA_OUT / "VGG16_feature_maps_live.png"
     _diagrama_visualkeras(base, diagrama_path)
-    tb_writer, tb_log_dir = _setup_tensorboard()
 
     n_total = len(image_paths)
     n_batches = (n_total + batch_size - 1) // batch_size
@@ -318,17 +278,8 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
         tabel.add_row("Diagrama 3D:", f"[blue]{diagrama_path}[/blue]")
         tabel.add_row(
             "Feature maps live:",
-            f"[blue]{feature_maps_path}[/blue]  [dim](refresh / batch)[/dim]",
+            f"[blue]{feature_maps_path}[/blue]  [dim](refresh la fiecare 5 batch-uri)[/dim]",
         )
-        if tb_log_dir is not None:
-            tabel.add_row(
-                "TensorBoard:",
-                f"[blue]{tb_log_dir}[/blue]",
-            )
-            tabel.add_row(
-                "Comanda TB:",
-                "[green]tensorboard --logdir logs/vgg16_extraction --port 6006[/green]",
-            )
         return tabel
 
     def panou_log():
@@ -452,16 +403,6 @@ def extragere_cnn_vgg16(image_paths, batch_size=32):
                 except Exception as exc:
                     log_recent.append(
                         Text.from_markup(f"[yellow][viz][/yellow] PNG: {exc}")
-                    )
-                try:
-                    if batch_idx % 20 == 0 or batch_idx == n_batches - 1:
-                        _log_tensorboard(
-                            tb_writer, raw_list, activari_batch, batch_idx + 1,
-                            durata, stare["throughput"], sarite,
-                        )
-                except Exception as exc:
-                    log_recent.append(
-                        Text.from_markup(f"[yellow][viz][/yellow] TB: {exc}")
                     )
             log_recent.append(
                 Text.from_markup(
