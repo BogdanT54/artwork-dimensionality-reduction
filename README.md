@@ -1,8 +1,22 @@
-# Reducerea Dimensionalității pe Picturi (Best Artworks of All Time)
+# Reducerea Dimensionalității pe Picturi — Best Artworks of All Time
 
 Proiect pentru cursul **Tehnici de Învățare Automată și Aplicații**, tema **C. Reducerea dimensionalității**.
 
 Aplică șapte metode obligatorii (PCA, Analiză Factorială, NMF, ICA, Kernel PCA, MDS, t-SNE) pe vectori semantici extrași cu VGG16 din ~8.446 picturi ale celor 50 cei mai influenți pictori (Kaggle: `ikarus777/best-artworks-of-all-time`).
+
+---
+
+## Cele două variante de pipeline
+
+```
+Varianta A — ImageNet (rapid, ~15 min)
+  00_main_vectorizare.py  →  features_cnn.csv  →  01..08_main_*.py
+
+Varianta B — Fine-tunat pe picturi (recomandat, ~1-3h GPU)
+  00_main_vectorizare.py  →  00b_main_finetune.py  →  features_cnn.csv  →  01..08_main_*.py
+```
+
+**De ce contează?** VGG16 antrenat pe ImageNet știe să distingă pisici de mașini, nu stilul lui Van Gogh de cel al lui Rembrandt. Fine-tuning-ul pe cei 50 de artiști produce vectori fc2 discriminativi pentru sarcina reală — clusterele din PCA/t-SNE devin separabile.
 
 ---
 
@@ -11,29 +25,32 @@ Aplică șapte metode obligatorii (PCA, Analiză Factorială, NMF, ICA, Kernel P
 ```
 artwork-dimensionality-reduction/
 │
-├── kaggle.json.template        ← copiază în ~/.kaggle/kaggle.json și completează
+├── kaggle.json.template            ← copiază în ~/.kaggle/kaggle.json și completează
 │
 ├── data_in/
 │   └── best_artworks/
-│       ├── images/             ← descărcat de Kaggle (organizat pe pictor)
-│       ├── artists.csv         ← metadata 50 pictori (gen, naționalitate, ani)
-│       └── features_cnn.csv    ← GENERAT de 00_main_vectorizare.py
+│       ├── images/                 ← descărcat de Kaggle (organizat pe pictor)
+│       ├── artists.csv             ← metadata 50 pictori (gen, naționalitate, ani)
+│       ├── features_cnn.csv        ← GENERAT de pas 0 (sau 0b)
+│       ├── features_cnn.csv.imagenet_backup  ← backup ImageNet (creat de 00b)
+│       └── vgg16_finetuned.keras   ← model fine-tunat (creat de 00b)
 │
-├── data_out/                   ← toate PDF-urile și CSV-urile (golit selectiv la fiecare main)
+├── data_out/                       ← toate PDF-urile și CSV-urile
 │
-├── functii.py                  ← funcții calcul: VGG16 extractor, Bartlett, KMO, stres MDS...
-├── grafice.py                  ← funcții vizualizare: scatter, elbow, corelograma, eigenpicturi...
-├── reducere_dim.py             ← logica celor 7 metode (aplica_pca, aplica_fa, ...)
+├── functii.py                      ← calcule: VGG16 extractor, Bartlett, KMO, stres MDS...
+├── grafice.py                      ← vizualizare: scatter cu elipse, elbow, corelograma...
+├── reducere_dim.py                 ← logica celor 7 metode (aplica_pca, aplica_fa, ...)
 │
-├── 00_main_vectorizare.py      ← Pas 0 (o singură dată): imagini → features_cnn.csv
-├── 01_main_pca.py              ← Pas 1: PCA
-├── 02_main_fa.py               ← Pas 2: Analiză Factorială
-├── 03_main_nmf.py              ← Pas 3: NMF
-├── 04_main_ica.py              ← Pas 4: ICA
-├── 05_main_kpca.py             ← Pas 5: Kernel PCA
-├── 06_main_mds.py              ← Pas 6: MDS
-├── 07_main_tsne.py             ← Pas 7: t-SNE
-└── 08_main_comparatie.py       ← Pas 8: comparație cross-metode
+├── 00_main_vectorizare.py          ← Pas 0: descarcă date + extrage features ImageNet VGG16
+├── 00b_main_finetune.py            ← Pas 0b (opțional): fine-tunează VGG16 pe artiști
+├── 01_main_pca.py                  ← Pas 1: PCA
+├── 02_main_fa.py                   ← Pas 2: Analiză Factorială
+├── 03_main_nmf.py                  ← Pas 3: NMF
+├── 04_main_ica.py                  ← Pas 4: ICA
+├── 05_main_kpca.py                 ← Pas 5: Kernel PCA
+├── 06_main_mds.py                  ← Pas 6: MDS
+├── 07_main_tsne.py                 ← Pas 7: t-SNE
+└── 08_main_comparatie.py           ← Pas 8: comparație cross-metode
 ```
 
 ---
@@ -49,32 +66,73 @@ pip install -r requirements.txt
 ### 2. Configurare Kaggle API
 
 ```bash
-# Copiază template-ul și completează username + key
 cp kaggle.json.template ~/.kaggle/kaggle.json
 # Editează fișierul — înlocuiește cele două câmpuri cu datele tale Kaggle
-# (Account → Settings → API → Create New Token)
+# (kaggle.com → Account → Settings → API → Create New Token)
 chmod 600 ~/.kaggle/kaggle.json
-# Verificare
-kaggle datasets list -s "best artworks" | head -3
 ```
 
-### 3. Generare vectori CNN (Pas 0 — rulat o singură dată)
+### 3. Eliberare memorie înainte de rulare (recomandat în Codespaces)
+
+```bash
+sudo sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
+pkill -f tensorboard 2>/dev/null; true
+free -h   # verificare RAM disponibil
+```
+
+---
+
+## Pas 0 — Descărcare date și extragere features ImageNet
 
 ```bash
 python 00_main_vectorizare.py
 ```
 
-Descarcă automat dataset-ul (dacă lipsește), extrage vectori VGG16 fc2 (4096-dim) și salvează:
-`data_in/best_artworks/features_cnn.csv` — ~8.446 rânduri × 4.101 coloane (5 metadata + 4096 features).
+La prima rulare: descarcă automat dataset-ul de pe Kaggle (~2.7 GB), normalizează numele folderelor (fix Unicode NFD→NFC), verifică că toți cei 50 de artiști sunt prezenți pe disc, apoi extrage vectori VGG16 fc2 (4096-dim) cu afișaj live multi-panou.
 
-Durată estimată: ~15 min cu GPU, ~1h cu CPU.
+Salvează: `data_in/best_artworks/features_cnn.csv` — ~8.446 rânduri × 4.101 coloane.
+
+La rulări ulterioare: sare peste extragere dacă `features_cnn.csv` există deja.
+
+**Durată estimată:** ~15 min GPU / ~1h CPU.
 
 ---
 
-## Rulare metode (Pașii 1–8)
+## Pas 0b — Fine-tuning VGG16 pe setul de picturi *(recomandat)*
 
-Fiecare script se rulează independent după ce `features_cnn.csv` există.
-Outputurile se acumulează în `data_out/` — rularea unui main nu șterge outputurile altora.
+```bash
+python 00b_main_finetune.py
+```
+
+Antrenează VGG16 pe clasificarea celor 50 de artiști, în două faze:
+
+| Faza | Ce se antrenează | LR | Epoci max |
+|------|------------------|----|-----------|
+| 1 — cap clasificare | Strat nou `Dense(50)` — backbone înghețat | 1e-3 | 12 |
+| 2 — fine-tuning | block4 + block5 + fc1 + fc2 + cap | 1e-5 | 30 |
+
+**Augmentare date** (faza de antrenare): flip orizontal aleator, variații de luminozitate, saturație, contrast — reduce overfitting-ul pe ~169 imagini/artist.
+
+**Early stopping** cu `patience=5` în ambele faze; cel mai bun model (pe `val_accuracy`) este restaurat automat.
+
+La final:
+- `data_in/best_artworks/vgg16_finetuned.keras` — model salvat
+- `features_cnn.csv` — **suprascris** cu vectori fc2 din modelul fine-tunat
+- `features_cnn.csv.imagenet_backup` — backup al versiunii ImageNet (pentru revenire)
+- `data_out/Training_finetune.pdf` — curbe accuracy + loss (ambele faze)
+
+**Revenire la features ImageNet:**
+```bash
+cp data_in/best_artworks/features_cnn.csv.imagenet_backup data_in/best_artworks/features_cnn.csv
+```
+
+**Durată estimată:** ~1-3h GPU / ~8-24h CPU.
+
+---
+
+## Pașii 1–8 — Metode de reducere a dimensionalității
+
+Fiecare script se rulează independent după ce `features_cnn.csv` există. Outputurile se acumulează în `data_out/` — rularea unui main nu șterge outputurile celorlalți.
 
 ```bash
 python 01_main_pca.py
@@ -91,23 +149,29 @@ python 08_main_comparatie.py   # necesită outputurile pașilor 1–7
 
 ## Fișiere generate în `data_out/`
 
+### Fine-tuning (`00b_main_finetune.py`)
+
+| Fișier | Tip | Conținut |
+|---|---|---|
+| `Training_finetune.pdf` | PDF | Curbe acuratețe + loss (faza 1 cap / faza 2 fine-tune) |
+
 ### PCA (`01_main_pca.py`)
 
 | Fișier | Tip | Conținut |
 |---|---|---|
 | `Varianta_PCA.csv` | CSV | Varianță explicată per componentă + procent cumulativ |
-| `Scoruri_PCA.csv` | CSV | Scorurile celor 8.446 picturi pe primele 50 componente + metadata |
+| `Scoruri_PCA.csv` | CSV | Scoruri pe 150 componente + metadata (pictor, stil, epocă, gen) |
 | `r_xc_PCA.csv` | CSV | Corelații features-componente (matrice loadings ponderată) |
 | `Selectie_PCA.csv` | CSV | Nr. componente recomandate per criteriu (Kaiser, 80%, Elbow) |
-| `Varianta_PCA.pdf` | PDF | Grafic varianță explicată cumulativă + prag 80% |
+| `Varianta_PCA.pdf` | PDF | Varianță cumulativă + prag 80% + markere Kaiser/Elbow |
 | `Elbow_PCA.pdf` | PDF | Scree plot PCA cu marcaj Elbow |
 | `Corelograma_PCA.pdf` | PDF | Heatmap corelații features × componente (top 50 features) |
 | `Cercul_PCA.pdf` | PDF | Cercul corelațiilor (biplot) |
 | `Eigenpicturi_PCA.pdf` | PDF | Top 5 picturi cu scor max/min pe primele 6 componente |
-| `Scatter_PCA_artist.pdf` | PDF | Scatter 2D comp1/comp2, colorat pe pictor |
-| `Scatter_PCA_stil.pdf` | PDF | Scatter 2D comp1/comp2, colorat pe stil artistic |
-| `Scatter_PCA_epoca.pdf` | PDF | Scatter 2D comp1/comp2, colorat pe epocă |
-| `Scatter_PCA_gen.pdf` | PDF | Scatter 2D comp1/comp2, colorat pe naționalitate |
+| `Scatter_PCA_artist.pdf` | PDF | Scatter 2D comp1/comp2 cu elipse de confidență + etichete centroid |
+| `Scatter_PCA_stil.pdf` | PDF | Scatter 2D colorat pe stil artistic |
+| `Scatter_PCA_epoca.pdf` | PDF | Scatter 2D colorat pe epocă |
+| `Scatter_PCA_gen.pdf` | PDF | Scatter 2D colorat pe naționalitate |
 
 ### Analiză Factorială (`02_main_fa.py`)
 
@@ -120,10 +184,7 @@ python 08_main_comparatie.py   # necesită outputurile pașilor 1–7
 | `Scoruri_FA.csv` | CSV | Scorurile factoriale ale celor 8.446 picturi + metadata |
 | `Comunalitati_FA.pdf` | PDF | Bar chart comunalități (top 40 features) |
 | `Loadings_FA.pdf` | PDF | Heatmap loadings features × factori |
-| `Scatter_FA_artist.pdf` | PDF | Scatter 2D F1/F2, colorat pe pictor |
-| `Scatter_FA_stil.pdf` | PDF | Scatter 2D F1/F2, colorat pe stil |
-| `Scatter_FA_epoca.pdf` | PDF | Scatter 2D F1/F2, colorat pe epocă |
-| `Scatter_FA_gen.pdf` | PDF | Scatter 2D F1/F2, colorat pe naționalitate |
+| `Scatter_FA_*.pdf` | PDF | Scatter 2D F1/F2 × 4 coloraje |
 
 ### NMF (`03_main_nmf.py`)
 
@@ -134,10 +195,7 @@ python 08_main_comparatie.py   # necesită outputurile pașilor 1–7
 | `H_NMF.csv` | CSV | Matricea H (componente-features) pentru q optim |
 | `Elbow_NMF.pdf` | PDF | Curba erorii Frobenius + punct Elbow |
 | `Componente_NMF.pdf` | PDF | Top 5 picturi cu activare maximă pe fiecare componentă NMF |
-| `Scatter_NMF_artist.pdf` | PDF | Scatter 2D C1/C2, colorat pe pictor |
-| `Scatter_NMF_stil.pdf` | PDF | Scatter 2D C1/C2, colorat pe stil |
-| `Scatter_NMF_epoca.pdf` | PDF | Scatter 2D C1/C2, colorat pe epocă |
-| `Scatter_NMF_gen.pdf` | PDF | Scatter 2D C1/C2, colorat pe naționalitate |
+| `Scatter_NMF_*.pdf` | PDF | Scatter 2D C1/C2 × 4 coloraje |
 
 ### ICA (`04_main_ica.py`)
 
@@ -147,14 +205,8 @@ python 08_main_comparatie.py   # necesită outputurile pașilor 1–7
 | `Entropie_Kurtosis_ICA.csv` | CSV | Entropie diferențială + kurtosis per componentă independentă |
 | `Kurtosis_ICA.pdf` | PDF | Bar chart kurtosis — cu cât mai mare, cu atât mai non-gaussian |
 | `Entropie_ICA.pdf` | PDF | Bar chart entropie diferențială per IC |
-| `Top_picturi_IC1.pdf` | PDF | Top 5 picturi cu activare absolută maximă pe IC1 |
-| `Top_picturi_IC2.pdf` | PDF | Top 5 picturi cu activare absolută maximă pe IC2 |
-| `Top_picturi_IC3.pdf` | PDF | Top 5 picturi cu activare absolută maximă pe IC3 |
-| `Top_picturi_IC4.pdf` | PDF | Top 5 picturi cu activare absolută maximă pe IC4 |
-| `Scatter_ICA_artist.pdf` | PDF | Scatter 2D IC1/IC2, colorat pe pictor |
-| `Scatter_ICA_stil.pdf` | PDF | Scatter 2D IC1/IC2, colorat pe stil |
-| `Scatter_ICA_epoca.pdf` | PDF | Scatter 2D IC1/IC2, colorat pe epocă |
-| `Scatter_ICA_gen.pdf` | PDF | Scatter 2D IC1/IC2, colorat pe naționalitate |
+| `Top_picturi_IC*.pdf` | PDF | Top 5 picturi cu activare absolută maximă pe primele 4 IC |
+| `Scatter_ICA_*.pdf` | PDF | Scatter 2D IC1/IC2 × 4 coloraje |
 
 ### Kernel PCA (`05_main_kpca.py`)
 
@@ -162,10 +214,7 @@ python 08_main_comparatie.py   # necesită outputurile pașilor 1–7
 |---|---|---|
 | `Scoruri_KPCA.csv` | CSV | Scoruri Kernel PCA (RBF) pe sub-eșantion + metadata |
 | `Scoruri_PCA_referinta_KPCA.csv` | CSV | Scoruri PCA liniar pe același sub-eșantion (referință) |
-| `Comparatie_KPCA_PCA_artist.pdf` | PDF | Side-by-side PCA liniar vs Kernel PCA, colorat pe pictor |
-| `Comparatie_KPCA_PCA_stil.pdf` | PDF | Side-by-side, colorat pe stil |
-| `Comparatie_KPCA_PCA_epoca.pdf` | PDF | Side-by-side, colorat pe epocă |
-| `Comparatie_KPCA_PCA_gen.pdf` | PDF | Side-by-side, colorat pe naționalitate |
+| `Comparatie_KPCA_PCA_*.pdf` | PDF | Side-by-side PCA liniar vs Kernel PCA × 4 coloraje |
 
 ### MDS (`06_main_mds.py`)
 
@@ -183,15 +232,9 @@ python 08_main_comparatie.py   # necesită outputurile pașilor 1–7
 
 | Fișier | Tip | Conținut |
 |---|---|---|
-| `Scoruri_tSNE_perp5.csv` | CSV | Embedding 2D cu perplexity=5 + metadata |
-| `Scoruri_tSNE_perp30.csv` | CSV | Embedding 2D cu perplexity=30 + metadata |
-| `Scoruri_tSNE_perp50.csv` | CSV | Embedding 2D cu perplexity=50 + metadata |
-| `Scoruri_tSNE_perp100.csv` | CSV | Embedding 2D cu perplexity=100 + metadata |
+| `Scoruri_tSNE_perp*.csv` | CSV | Embedding 2D × 4 valori de perplexity (5, 30, 50, 100) + metadata |
 | `KL_tSNE.csv` | CSV | Divergența KL finală per valoare de perplexity |
-| `Grid_tSNE_artist.pdf` | PDF | Grid 2×2 scatter (4 perplexity), colorat pe pictor |
-| `Grid_tSNE_stil.pdf` | PDF | Grid 2×2, colorat pe stil artistic |
-| `Grid_tSNE_epoca.pdf` | PDF | Grid 2×2, colorat pe epocă |
-| `Grid_tSNE_gen.pdf` | PDF | Grid 2×2, colorat pe naționalitate |
+| `Grid_tSNE_*.pdf` | PDF | Grid 2×2 scatter (4 perplexity) × 4 coloraje |
 
 ### Comparație cross-metode (`08_main_comparatie.py`)
 
@@ -206,8 +249,33 @@ python 08_main_comparatie.py   # necesită outputurile pașilor 1–7
 
 ## Note tehnice
 
+### Extragere features
+- **Extragerea rulează o singură dată** în batch-uri (nu epochs) — este inference pur, fără antrenare. Fiecare imagine trece prin rețea exact o dată pentru a obține vectorul fc2.
+- **Afișaj live** în timpul extragerii: dashboard `rich` cu bara de progress, strat curent din forward pass, throughput și statistici. Feature maps PNG salvate la fiecare 5 batch-uri în `data_out/VGG16_feature_maps_live.png`.
+- **Checkpoint** la fiecare 50 de batch-uri: `data_out/features_partial.npy` + `data_out/paths_partial.txt` — în caz de crash, extragerea poate fi reluată manual.
+- **Scriere atomică**: `features_cnn.csv` este scris mai întâi ca `.csv.tmp`, apoi redenumit — un crash mid-write nu poate corupe fișierul existent.
+
+### Fine-tuning
+- **De ce nu epochs la extragere, dar epochs la fine-tuning?** Extragerea e inference (greutăți fixe → output determinist → o singură trecere ajunge). Fine-tuning-ul actualizează greutățile prin backpropagare → necesită mai multe treceri (epochs) până la convergență.
+- **Augmentare**: flip orizontal, variații de luminozitate/saturație/contrast aplicate înainte de `preprocess_input` VGG16. Reduc overfitting-ul pe ~169 imagini/artist.
+- **Two-phase**: faza 1 la LR mare (1e-3) adaptează capul nou fără a strica features pre-antrenate; faza 2 la LR mic (1e-5) ajustează fin straturile superioare fără a distruge features ImageNet utile.
+- **fc2 rămâne 4096-dim** — dimensiunea features și formatul `features_cnn.csv` sunt identice între varianta ImageNet și cea fine-tunată. Pașii 1–8 funcționează cu ambele fără modificări.
+
+### Scatter plots (PCA, FA, NMF, ICA, t-SNE)
+- **Elipse de confidență** per categorie (bazate pe eigendecompoziția matricei de covarianță a clusterului, n_std≈1.7).
+- **Etichete la centroid**: pentru artist (50 categorii) se afișează prenumele/cognomenul pe fond alb; pentru stil/epocă/gen se afișează eticheta completă.
+- **% varianță pe axe**: `Comp1 (5.2% varianță)`, `Comp2 (3.1% varianță)` — explică de ce PCA 2D nu produce separare perfectă.
+
+### PCA pe features CNN
+- **80% varianță necesită multe componente** (>100) — specific features CNN distribuite uniform pe multe direcții, nu ca datele tabulare clasice. Nu indică o problemă; este o proprietate a spațiului de embeddings.
+- Graficul `Varianta_PCA.pdf` arată unde se atinge efectiv 80% (n_max=150 componente calculate) și marchează criteriile Kaiser și Elbow.
+
+### Alte metode
 - **VGG16 fc2 + NMF**: stratul fc2 are activare ReLU → valori ≥ 0 → NMF funcționează direct, fără MinMaxScaler.
 - **Eigenpicturi PCA**: în spațiu CNN nu se pot reconstrui imagini pixel-wise. Se afișează TOP 5 picturi reale cu scor maxim/minim pe fiecare componentă — interpretare semantică directă.
-- **MDS pe centroizi**: MDS pe 8.446 instanțe ar necesita ~280 GB RAM (O(n²)). Se agregă la centroizii celor 50 pictori, deci MDS interpretează distanțe stilistice între pictori.
+- **MDS pe centroizi**: MDS pe 8.446 instanțe ar necesita ~280 GB RAM (O(n²) matrice distanțe). Se agregă la centroizii celor 50 pictori → MDS interpretează distanțe stilistice între pictori.
 - **t-SNE pe PCA-50**: t-SNE pe 4.096 features brute e lent și zgomotos. Pipeline standard: PCA la 50 componente, apoi t-SNE.
 - **KPCA pe sub-eșantion**: kernel matrix O(n²) — se folosesc max 2.000 instanțe stratificat per pictor.
+
+### Unicode și compatibilitate OS
+Kaggle extrage uneori arhivele cu encoding NFD pe Linux (caracterele compuse precum `ü` sunt stocate ca `u` + combining diacritic în loc de un singur codepoint). La fiecare pornire, scriptul `00_main_vectorizare.py` normalizează automat toate folderele NFD → NFC și afișează un raport complet cu care artiști sunt găsiți pe disc.

@@ -8,3 +8,6 @@ tensorflow>=2.13
 scipy
 kaggle
 tqdm
+rich
+visualkeras
+aggdraw
