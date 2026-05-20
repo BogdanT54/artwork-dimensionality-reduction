@@ -26,12 +26,40 @@ def show():
 
 
 def generare_culori(n):
-    """Returnează o paletă de n culori distincte (combinație tab20 + Set3)."""
-    base = list(plt.get_cmap("tab20").colors) + list(plt.get_cmap("Set3").colors)
-    base = base + list(plt.get_cmap("tab20b").colors) + list(plt.get_cmap("tab20c").colors)
-    while len(base) < n:
-        base = base * 2
-    return base[:n]
+    """Returnează n culori maximally distinct.
+
+    Folosește distinctipy (garantează distanța perceptuală maximă între culori)
+    dacă este instalat; altfel fallback la combinație tab20+Set3+tab20b+tab20c.
+    """
+    try:
+        import distinctipy
+        # exclude_colors: alb și negru evitate ca fundal/text
+        return distinctipy.get_colors(n, exclude_colors=[(1, 1, 1), (0, 0, 0)],
+                                      rng=42)
+    except ImportError:
+        base = (list(plt.get_cmap("tab20").colors) + list(plt.get_cmap("Set3").colors)
+                + list(plt.get_cmap("tab20b").colors) + list(plt.get_cmap("tab20c").colors))
+        while len(base) < n:
+            base = base * 2
+        return base[:n]
+
+
+def _culori_hex_plotly(n):
+    """Returnează n culori hex pentru Plotly (distinctipy sau fallback Plotly qualitative)."""
+    try:
+        import distinctipy
+        rgb_list = distinctipy.get_colors(n, exclude_colors=[(1, 1, 1), (0, 0, 0)],
+                                          rng=42)
+        return [f"rgb({int(r*255)},{int(g*255)},{int(b*255)})" for r, g, b in rgb_list]
+    except ImportError:
+        import plotly.express as px
+        # Combină Alphabet (26) + Dark24 (24) + Plotly standard (10) → 60 culori
+        palette = (px.colors.qualitative.Alphabet
+                   + px.colors.qualitative.Dark24
+                   + px.colors.qualitative.Plotly)
+        while len(palette) < n:
+            palette = palette * 2
+        return palette[:n]
 
 
 def _ellipsa_confidenta(ax, x_vals, y_vals, color, n_std=1.7, alpha_fill=0.10):
@@ -505,6 +533,8 @@ def f_scatter_interactiv_2d(scoruri, metadata, by, fisier, titlu,
                              comp_x=0, comp_y=1):
     """
     Scatter 2D interactiv (plotly) cu hover tooltip: artist, stil, epoca, gen, path.
+    Folosește culori maximally distinct (distinctipy) + simboluri diferite când sunt
+    mai mult de 15 categorii (double encoding culoare + formă marker).
     Salvat ca HTML — deschis în browser sau inline în Kaggle/Jupyter.
     """
     import plotly.express as px
@@ -513,13 +543,31 @@ def f_scatter_interactiv_2d(scoruri, metadata, by, fisier, titlu,
     df_plot.columns = ["x", "y"] + list(df_plot.columns[2:])
 
     hover_cols = [c for c in ["artist", "stil", "epoca", "gen", "path"] if c in df_plot.columns]
+    n_cat = int(df_plot[by].nunique()) if by in df_plot.columns else 1
+    colors = _culori_hex_plotly(n_cat)
+
+    # Double encoding: culoare + simbol marker pentru >15 categorii
+    use_symbol = n_cat > 15
+
     fig = px.scatter(
         df_plot, x="x", y="y", color=by,
+        symbol=by if use_symbol else None,
         hover_data=hover_cols,
-        title=titlu, opacity=0.7,
+        title=titlu, opacity=0.75,
+        color_discrete_sequence=colors,
     )
-    fig.update_traces(marker=dict(size=6))
-    fig.update_layout(width=1100, height=750, legend=dict(itemsizing="constant"))
+    fig.update_traces(marker=dict(size=7, line=dict(width=0)))
+    fig.update_layout(
+        width=1200, height=800,
+        legend=dict(
+            itemsizing="constant",
+            title_text=by,
+            font=dict(size=11),
+            tracegroupgap=2,
+        ),
+        xaxis=dict(showgrid=True, gridcolor="rgba(200,200,200,0.3)"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(200,200,200,0.3)"),
+    )
 
     target_dir = DATA_OUT / _SUBDIR if _SUBDIR else DATA_OUT
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -530,6 +578,7 @@ def f_scatter_interactiv_3d(scoruri, metadata, by, fisier, titlu,
                              comp_x=0, comp_y=1, comp_z=2):
     """
     Scatter 3D interactiv (plotly) — rotire, zoom, hover tooltip cu detalii pictură.
+    Culori maximally distinct (distinctipy) + simboluri pentru >15 categorii.
     """
     import plotly.express as px
 
@@ -537,13 +586,28 @@ def f_scatter_interactiv_3d(scoruri, metadata, by, fisier, titlu,
     df_plot.columns = ["x", "y", "z"] + list(df_plot.columns[3:])
 
     hover_cols = [c for c in ["artist", "stil", "epoca", "gen", "path"] if c in df_plot.columns]
+    n_cat = int(df_plot[by].nunique()) if by in df_plot.columns else 1
+    colors = _culori_hex_plotly(n_cat)
+
+    use_symbol = n_cat > 15
+
     fig = px.scatter_3d(
         df_plot, x="x", y="y", z="z", color=by,
+        symbol=by if use_symbol else None,
         hover_data=hover_cols,
-        title=titlu, opacity=0.7,
+        title=titlu, opacity=0.75,
+        color_discrete_sequence=colors,
     )
-    fig.update_traces(marker=dict(size=3))
-    fig.update_layout(width=1100, height=850, legend=dict(itemsizing="constant"))
+    fig.update_traces(marker=dict(size=4, line=dict(width=0)))
+    fig.update_layout(
+        width=1200, height=900,
+        legend=dict(
+            itemsizing="constant",
+            title_text=by,
+            font=dict(size=11),
+            tracegroupgap=2,
+        ),
+    )
 
     target_dir = DATA_OUT / _SUBDIR if _SUBDIR else DATA_OUT
     target_dir.mkdir(parents=True, exist_ok=True)

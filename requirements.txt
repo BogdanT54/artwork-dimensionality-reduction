@@ -12,3 +12,4 @@ rich
 visualkeras
 aggdraw
 plotly
+distinctipy
