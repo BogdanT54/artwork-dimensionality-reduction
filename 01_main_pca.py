@@ -17,17 +17,30 @@ def _citeste():
     return df, x, metadata
 
 
-def _construieste_validitate(e, n_total, n_features):
+def _construieste_validitate(e, n_total, n_features, n_max_calculat):
     """Tabel de validitate PCA: criterii standard + interpretare."""
     var_first2 = float(e["varianta_ratio"][:2].sum()) * 100
     var_first3 = float(e["varianta_ratio"][:3].sum()) * 100
+
+    kaiser_val = e["n_kaiser"]
+    if kaiser_val >= n_max_calculat - 5:
+        kaiser_interp = (f"ATENȚIE: {kaiser_val} ≈ n_max ({n_max_calculat}) → Kaiser inaplicabil pe features CNN "
+                         f"(sute de componente au λ>1); folosiți Elbow ca criteriu operațional")
+    else:
+        kaiser_interp = "Componente cu varianță peste medie (eigenvalue > 1)"
+
+    n80_val = e["n_80"]
+    n80_interp = ("Nr. minim pentru a reține 80% din info"
+                  if n80_val <= n_max_calculat
+                  else f"Depășește n_max calculat ({n_max_calculat}) — run PCA cu mai multe componente")
+
     rows = [
         {"Criteriu": "Kaiser (eigenvalue > 1)",
-         "Valoare": f"{e['n_kaiser']} componente",
-         "Interpretare": "Componente cu varianță peste medie"},
+         "Valoare": f"{kaiser_val} componente",
+         "Interpretare": kaiser_interp},
         {"Criteriu": "Prag 80% varianță cumulativă",
-         "Valoare": f"{e['n_80']} componente",
-         "Interpretare": "Nr. minim pentru a reține 80% din info"},
+         "Valoare": f"{n80_val} componente",
+         "Interpretare": n80_interp},
         {"Criteriu": "Elbow scree",
          "Valoare": f"{e['n_elbow']} componente",
          "Interpretare": "Punct de cot al scree plot-ului"},
@@ -54,10 +67,12 @@ def main():
     df, x, metadata = _citeste()
     pasi.info(f"X = {x.shape}  →  data_out/{SUBDIR}/")
 
-    pasi.pas(f"Fit PCA (n_max=150 componente)")
-    rez = reducere_dim.aplica_pca(df, x, metadata, n_max=150)
+    n_max_pca = min(x.shape[1], x.shape[0] - 1, 500)
+    pasi.pas(f"Fit PCA (n_max={n_max_pca} componente)")
+    rez = reducere_dim.aplica_pca(df, x, metadata, n_max=n_max_pca)
     e = rez.extra
-    pasi.info(f"Kaiser: {e['n_kaiser']} | 80%: {e['n_80']} | Elbow: {e['n_elbow']}")
+    kaiser_note = " (≈ toate comp. au λ>1, critic Kaiser inaplicabil pe CNN)" if e["n_kaiser"] >= n_max_pca - 5 else ""
+    pasi.info(f"Kaiser: {e['n_kaiser']}{kaiser_note} | 80%: {e['n_80']} | Elbow: {e['n_elbow']}")
 
     pasi.pas("Salvare scoruri / corelații / varianță")
     tabel_var = functii.tabelare_varianta(e["varianta_ratio"])
@@ -78,7 +93,7 @@ def main():
     print(raport.to_string(index=False))
 
     pasi.pas("Tabel de validitate")
-    df_val = _construieste_validitate(e, len(metadata), x.shape[1])
+    df_val = _construieste_validitate(e, len(metadata), x.shape[1], n_max_pca)
     functii.salveaza_validitate(df_val, SUBDIR, "Validitate_PCA.csv")
     grafice.plot_validitate(df_val, "Validitate_PCA.pdf",
                             titlu="Validitate PCA — criterii de selecție")

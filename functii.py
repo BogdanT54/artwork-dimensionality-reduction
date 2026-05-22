@@ -691,6 +691,13 @@ def bartlett_kmo(X):
     from scipy.stats import chi2 as chi2_dist
 
     X = np.asarray(X, dtype=np.float64)
+
+    # Eliminăm features cu varianță nulă sau aproape nulă (evită RuntimeWarning / NaN în corrcoef)
+    var = X.var(axis=0)
+    valid_mask = var > 1e-10
+    if not valid_mask.all():
+        X = X[:, valid_mask]
+
     n, p = X.shape
 
     R = np.corrcoef(X, rowvar=False)

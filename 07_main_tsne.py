@@ -14,7 +14,6 @@ SUBDIR = "tsne"
 def _construieste_validitate(e, n_obs):
     rezultate = e["rezultate_per_perp"]
     kl_values = {perp: d["kl_divergence"] for perp, d in rezultate.items()}
-    best_perp = min(kl_values, key=kl_values.get)
 
     rows = [
         {"Criteriu": "Nr componente PCA intermediar",
@@ -23,12 +22,14 @@ def _construieste_validitate(e, n_obs):
         {"Criteriu": "Perplexity testate",
          "Valoare": str(list(kl_values.keys())),
          "Interpretare": "Controlează nr vecini locali; 30-50 recomandat pentru clustere vizibile"},
-        {"Criteriu": "Cel mai bun perplexity (KL minim)",
-         "Valoare": f"{best_perp}",
-         "Interpretare": "KL Divergence minimă = cel mai bun fit al distribuției locale"},
+        {"Criteriu": "KL Divergence — ATENȚIE",
+         "Valoare": "Nu comparabil cross-perplexity",
+         "Interpretare": "KL depinde de distribuția P (se modifică cu fiecare perplexity); "
+                         "valorile nu se compară între perplexity-uri diferite — "
+                         "folosiți Trustworthiness pentru comparație cross-perplexity"},
         *[{"Criteriu": f"KL Divergence (perp={perp})",
            "Valoare": f"{kl:.4f}",
-           "Interpretare": "Mai mic = structura locală mai bine păstrată"}
+           "Interpretare": "Diagnostic intern: calitate fit pentru ACEASTĂ configurație"}
           for perp, kl in kl_values.items()],
         {"Criteriu": "Observații",
          "Valoare": f"{n_obs}",

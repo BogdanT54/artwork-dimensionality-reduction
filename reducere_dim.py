@@ -107,11 +107,18 @@ def aplica_fa(df, x, metadata, n_factori=None):
 
 
 def aplica_nmf(df, x, metadata, q_list=(5, 10, 15, 20, 30, 50)):
-    """NMF cu Elbow pe eroare reconstrucție. X trebuie să fie ≥ 0 (VGG16 fc2 = ReLU)."""
+    """NMF cu Elbow pe eroare reconstrucție. X trebuie să fie ≥ 0.
+    Dacă features au valori negative (ex. DINOv2, ResNet fără ReLU final),
+    se aplică automat MinMaxScaler[0,1] înainte de NMF.
+    """
+    from sklearn.preprocessing import MinMaxScaler
     x = np.asarray(x)
     if x.min() < 0:
-        # safety: clip la 0 dacă există rounding/normalizare ce a produs negative
-        x = np.clip(x, 0, None)
+        # DINOv2 / alte backbone-uri fără ReLU final → scalare [0,1]
+        x = MinMaxScaler().fit_transform(x)
+        print("[NMF] features aveau valori negative → MinMaxScaler[0,1] aplicat automat")
+    else:
+        x = np.clip(x, 0, None)  # safety pentru rounding errors minime
 
     erori = []
     rezultate = {}
@@ -144,7 +151,8 @@ def aplica_ica(df, x, metadata, k):
     scaler = StandardScaler()
     x_std = scaler.fit_transform(x)
 
-    ica = FastICA(n_components=k, random_state=42, max_iter=1000, whiten="unit-variance")
+    ica = FastICA(n_components=k, random_state=42, max_iter=2000, tol=5e-4,
+                  whiten="unit-variance", whiten_solver="svd")
     scoruri = ica.fit_transform(x_std)
     df_ent = functii.calcul_entropie_ica(scoruri)
     return RezultatReducere(

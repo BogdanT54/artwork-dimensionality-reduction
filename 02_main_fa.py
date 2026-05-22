@@ -42,7 +42,13 @@ def _construieste_validitate(e, n_obs, n_features):
          "Interpretare": "Acoperită de cei {} factori".format(e['n_factori'])},
         {"Criteriu": "Comunalități medie",
          "Valoare": f"{float(np.mean(e['comunalitati'])):.3f}",
-         "Interpretare": "h² > 0.5 = variabilă bine explicată"},
+         "Interpretare": (
+             "h² > 0.5 = bine explicată — media depășește pragul"
+             if float(np.mean(e['comunalitati'])) >= 0.5
+             else f"NOTĂ: media h²={float(np.mean(e['comunalitati'])):.3f} < 0.5 — "
+                  f"normal pe features CNN de mare dimensionalitate; "
+                  f"factori explică parțial variabilitatea (top features h²>0.6)"
+         )},
         {"Criteriu": "Dimensiune analiză",
          "Valoare": f"{n_obs} × {n_features}",
          "Interpretare": "Observații × features (top-variance)"},

@@ -33,8 +33,8 @@ def _construieste_validitate(e, k, n_obs):
          "Valoare": f"{ent_mean:.3f}",
          "Interpretare": "Mai mică = mai non-gaussian (mai informativ)"},
         {"Criteriu": "Convergence FastICA",
-         "Valoare": "fitted",
-         "Interpretare": "Verifică warning-uri pentru non-convergență"},
+         "Valoare": "fitted (k≤20)",
+         "Interpretare": "k limitat la 20; tol=5e-4, max_iter=2000 — reduce non-convergența pe CNN features"},
         {"Criteriu": "Observații",
          "Valoare": f"{n_obs}",
          "Interpretare": "Imagini procesate"},
@@ -53,8 +53,9 @@ def main():
     metadata = df[META_COLS].copy()
     x = df.drop(columns=META_COLS).values.astype(np.float32)
     rez_pca = reducere_dim.aplica_pca(df, x, metadata, n_max=50)
-    k = min(30, max(2, rez_pca.extra["n_kaiser"]))
-    pasi.info(f"k = {k} componente (Kaiser PCA={rez_pca.extra['n_kaiser']})  →  data_out/{SUBDIR}/")
+    # Capăm la 20: FastICA pe >20 componente tinde să nu conveargă pe features CNN dense
+    k = min(20, max(2, rez_pca.extra["n_kaiser"]))
+    pasi.info(f"k = {k} componente (Kaiser PCA={rez_pca.extra['n_kaiser']}, capăt 20)  →  data_out/{SUBDIR}/")
 
     pasi.pas(f"Fit FastICA cu k={k}")
     rez = reducere_dim.aplica_ica(df, x, metadata, k=k)

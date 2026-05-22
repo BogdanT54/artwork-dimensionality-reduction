@@ -4,11 +4,20 @@ Suprascrie features_cnn.csv cu vectori fc2 extrași din modelul fine-tunat.
 
 Rulat DUPĂ 00_main_vectorizare.py (care descarcă datele).
 
-Abordare two-phase:
-  Faza 1 — backbone înghețat, antrenăm doar capul de clasificare (LR mare)
-  Faza 2 — dezghețăm block4+block5+fc1+fc2, fine-tuning cu LR mic
+Abordare two-phase cu best practices 2024:
+  Faza 1 — backbone înghețat, antrenăm doar capul de clasificare (Adam, LR=1e-3)
+  Faza 2 — dezghețăm DOAR block5 + FC (cel mai fin control), AdamW cu cosine decay
 
-Durată estimată: 1-3h GPU / 8-24h CPU.
+Îmbunătățiri față de VGG16 baseline:
+  - Augmentare puternică: RandomRotation, RandomZoom, RandomTranslation + flip/brightness
+  - Dropout crescut la 0.5 pe head
+  - AdamW (weight_decay=1e-4) = L2 implicit pe toți parametrii antrenați
+  - Class weights: sqrt(max_count / count) — robust la dezechilibrul VGG16 artworks
+  - Label smoothing 0.1 via CategoricalCrossentropy (reduce overconfidence)
+  - Cosine decay în faza 2 (mai stabil decât ReduceLROnPlateau)
+  - Dezgheță NUMAI block5 (nu block4) — reduce semnificativ overfitting-ul
+
+Durată estimată: 1-2h GPU P100.
 """
 import gc
 import sys
@@ -29,38 +38,76 @@ ARTISTS_CSV  = DATA_IN / "artists.csv"
 FEATURES_CSV = DATA_IN / "features_cnn.csv"
 MODEL_PATH   = DATA_IN / "vgg16_finetuned.keras"
 
-BATCH_TRAIN   = 16   # mai mic decât extracția — sunt și gradienți
+BATCH_TRAIN   = 16
 BATCH_EXTRACT = 32
 VAL_SPLIT     = 0.15
-EPOCHS_HEAD   = 12   # faza 1
-EPOCHS_FT     = 30   # faza 2 (cu early stopping)
+EPOCHS_HEAD   = 15   # faza 1 (mai mult — backbone înghețat, nu riscăm overfitting)
+EPOCHS_FT     = 25   # faza 2 (cu early stopping + cosine decay)
+LABEL_SMOOTH  = 0.1
+WEIGHT_DECAY  = 1e-4
 
-# Straturi dezghețate în faza 2 (block4, block5, fc1, fc2)
+# Faza 2: dezghețăm NUMAI block5 + FC (nu block4 — reduce overfitting)
 STRATURI_DEZGHETATE = {
-    "block4_conv1", "block4_conv2", "block4_conv3",
     "block5_conv1", "block5_conv2", "block5_conv3",
     "fc1", "fc2",
+    "dropout_head", "artist_pred",
 }
+
+
+# ─── augmentare ───────────────────────────────────────────────────────────────
+
+def _augmenteaza(img, label):
+    """Augmentare agresivă pentru dataset mic/dezechilibrat."""
+    import tensorflow as tf
+    img = tf.image.random_flip_left_right(img)
+    img = tf.image.random_brightness(img, max_delta=0.20)
+    img = tf.image.random_saturation(img, lower=0.70, upper=1.30)
+    img = tf.image.random_contrast(img, lower=0.75, upper=1.25)
+    img = tf.image.random_hue(img, max_delta=0.05)
+    # RandomRotation și RandomZoom prin keras layers
+    img = tf.expand_dims(img, 0)
+    img = tf.keras.layers.RandomRotation(0.08)(img, training=True)
+    img = tf.keras.layers.RandomZoom((-0.10, 0.10))(img, training=True)
+    img = tf.keras.layers.RandomTranslation(0.05, 0.05)(img, training=True)
+    img = tf.squeeze(img, 0)
+    img = tf.clip_by_value(img, 0.0, 255.0)
+    return img, label
+
+
+def _preprocess_vgg(img, label):
+    import tensorflow as tf
+    img = tf.cast(img, tf.float32)
+    img = tf.keras.applications.vgg16.preprocess_input(img)
+    return img, label
+
+
+def _to_onehot(img, label, n_classes):
+    import tensorflow as tf
+    return img, tf.one_hot(tf.cast(label, tf.int32), n_classes)
 
 
 # ─── date ────────────────────────────────────────────────────────────────────
 
-def _pregateste_dataset(images_dir, val_split, batch_size, augment_train=True):
-    """Construiește tf.data.Dataset din structura de directoare artist/imagine."""
+def _calcul_class_weights(images_dir):
+    """
+    Calculează class_weight dict cu sqrt inverse frequency.
+    sqrt(max_count / count) e mai robust decât inverse pur pentru dezechilibre mari.
+    """
+    extensii = {".jpg", ".jpeg", ".png", ".bmp"}
+    class_names = sorted(d.name for d in images_dir.iterdir() if d.is_dir())
+    counts = np.array([
+        sum(1 for f in (images_dir / cls).iterdir() if f.suffix.lower() in extensii)
+        for cls in class_names
+    ], dtype=float)
+    max_count = counts.max()
+    weights = np.sqrt(max_count / np.clip(counts, 1, None))
+    weights = weights / weights.mean()  # normalizăm la media 1
+    return {i: float(w) for i, w in enumerate(weights)}, class_names
+
+
+def _pregateste_dataset(images_dir, val_split, batch_size, n_classes):
+    """Construiește tf.data.Dataset cu augmentare + one-hot labels."""
     import tensorflow as tf
-
-    def _augmenteaza(img, label):
-        img = tf.image.random_flip_left_right(img)
-        img = tf.image.random_brightness(img, max_delta=0.15)
-        img = tf.image.random_saturation(img, lower=0.75, upper=1.25)
-        img = tf.image.random_contrast(img, lower=0.80, upper=1.20)
-        img = tf.clip_by_value(img, 0.0, 255.0)
-        return img, label
-
-    def _preprocess_vgg(img, label):
-        img = tf.cast(img, tf.float32)
-        img = tf.keras.applications.vgg16.preprocess_input(img)
-        return img, label
 
     kw = dict(
         directory=str(images_dir),
@@ -71,177 +118,120 @@ def _pregateste_dataset(images_dir, val_split, batch_size, augment_train=True):
     )
     train_ds = tf.keras.utils.image_dataset_from_directory(subset="training",  **kw)
     val_ds   = tf.keras.utils.image_dataset_from_directory(subset="validation", **kw)
-    class_names = train_ds.class_names
 
-    if augment_train:
-        train_ds = train_ds.map(_augmenteaza,    num_parallel_calls=tf.data.AUTOTUNE)
-    train_ds = train_ds.map(_preprocess_vgg, num_parallel_calls=tf.data.AUTOTUNE)
-    val_ds   = val_ds.map(_preprocess_vgg,   num_parallel_calls=tf.data.AUTOTUNE)
-    train_ds = train_ds.prefetch(tf.data.AUTOTUNE)
-    val_ds   = val_ds.prefetch(tf.data.AUTOTUNE)
+    AUTOTUNE = tf.data.AUTOTUNE
+    train_ds = (train_ds
+                .map(_augmenteaza,                       num_parallel_calls=AUTOTUNE)
+                .map(_preprocess_vgg,                    num_parallel_calls=AUTOTUNE)
+                .map(lambda x, y: _to_onehot(x, y, n_classes), num_parallel_calls=AUTOTUNE)
+                .prefetch(AUTOTUNE))
+    val_ds = (val_ds
+              .map(_preprocess_vgg,                      num_parallel_calls=AUTOTUNE)
+              .map(lambda x, y: _to_onehot(x, y, n_classes), num_parallel_calls=AUTOTUNE)
+              .prefetch(AUTOTUNE))
 
-    return train_ds, val_ds, class_names
+    return train_ds, val_ds
 
 
 # ─── model ───────────────────────────────────────────────────────────────────
 
 def _construieste_model(n_classes):
-    """VGG16 (include_top=True) + dropout + cap clasificare artiști."""
+    """VGG16 ImageNet + dropout 0.5 + cap clasificare."""
     import tensorflow as tf
     from tensorflow.keras.applications.vgg16 import VGG16
     from tensorflow.keras.layers import Dropout, Dense
     from tensorflow.keras.models import Model
 
     base = VGG16(weights="imagenet", include_top=True)
-
-    # Înlocuiește ultimul strat (predictions/1000) cu capul nostru
     x = base.get_layer("fc2").output
-    x = Dropout(0.4, name="dropout_head")(x)
+    x = Dropout(0.5, name="dropout_head")(x)
     output = Dense(n_classes, activation="softmax", name="artist_pred")(x)
-    model = Model(inputs=base.input, outputs=output, name="vgg16_artisti")
-    return model
-
-
-# ─── callback feature maps live ──────────────────────────────────────────────
-
-def _construieste_callback_feature_maps(sample_img_path, output_path, freq_batches=25):
-    """
-    Callback Keras: pe parcursul antrenării, la fiecare `freq_batches` batch-uri,
-    extrage feature maps (LAYERE_VIZ) pentru o imagine de referință, salvează
-    PNG-ul și îl actualizează inline în notebook (Kaggle/Jupyter).
-    """
-    import tensorflow as tf
-    from tensorflow.keras.preprocessing import image as kimage
-    from tensorflow.keras.applications.vgg16 import preprocess_input
-
-    img = kimage.load_img(sample_img_path, target_size=(224, 224))
-    raw = kimage.img_to_array(img)
-    x_in = preprocess_input(np.expand_dims(raw.copy(), axis=0))
-    sample_name = Path(sample_img_path).parent.name.replace("_", " ")
-
-    class _CB(tf.keras.callbacks.Callback):
-        def __init__(self):
-            super().__init__()
-            self.feat_model = None
-            self.names = []
-            self.display = functii._KaggleImageDisplay()
-            self.global_step = 0
-            self.t0 = time.time()
-
-        def _build(self):
-            outputs, names = [], []
-            for nume in functii.LAYERE_VIZ:
-                try:
-                    outputs.append(self.model.get_layer(nume).output)
-                    names.append(nume)
-                except ValueError:
-                    pass
-            if not outputs:
-                return False
-            self.feat_model = tf.keras.Model(
-                inputs=self.model.input, outputs=outputs, name="feat_viz",
-            )
-            self.names = names
-            return True
-
-        def on_train_batch_end(self, batch, logs=None):
-            self.global_step += 1
-            if self.global_step % freq_batches != 0:
-                return
-            if self.feat_model is None and not self._build():
-                return
-            try:
-                outs = self.feat_model.predict(x_in, verbose=0)
-                if not isinstance(outs, (list, tuple)):
-                    outs = [outs]
-                activari = {n: a for n, a in zip(self.names, outs)}
-                durata = time.time() - self.t0
-                functii._salveaza_feature_maps_png(
-                    raw, activari, self.global_step,
-                    sample_name, durata, output_path,
-                )
-                self.display.update(output_path)
-            except Exception as exc:
-                print(f"[viz] feature maps step {self.global_step}: {exc}")
-
-    return _CB()
+    return Model(inputs=base.input, outputs=output, name="vgg16_artisti")
 
 
 # ─── antrenare ───────────────────────────────────────────────────────────────
 
-def _antrenare(model, train_ds, val_ds, sample_img_path=None):
+def _antrenare(model, train_ds, val_ds, class_weight_dict, steps_per_epoch):
     import tensorflow as tf
 
-    callbacks_baza = [
-        tf.keras.callbacks.EarlyStopping(
-            monitor="val_accuracy", patience=5,
-            restore_best_weights=True, verbose=1,
-        ),
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor="val_loss", factor=0.5, patience=3,
-            min_lr=1e-7, verbose=1,
-        ),
-    ]
+    loss_fn = tf.keras.losses.CategoricalCrossentropy(label_smoothing=LABEL_SMOOTH)
 
-    if sample_img_path is not None:
-        feature_maps_path = functii.DATA_OUT / "VGG16_finetune_feature_maps_live.png"
-        callbacks_baza.append(
-            _construieste_callback_feature_maps(
-                sample_img_path, feature_maps_path, freq_batches=25,
-            )
-        )
-        print(f"[viz] feature maps live → {feature_maps_path} (refresh la 25 batch-uri)")
+    early_stop = tf.keras.callbacks.EarlyStopping(
+        monitor="val_accuracy", patience=5,
+        restore_best_weights=True, verbose=1,
+    )
 
-    # ── Faza 1: backbone înghețat, antrenăm doar capul ──────────────────────
+    # ── Faza 1: backbone înghețat, antrenăm capul ──────────────────────────
     print("\n" + "═" * 60)
     print("  Faza 1 / 2 — antrenare cap clasificare (backbone înghețat)")
     print("═" * 60)
+
     for layer in model.layers:
         layer.trainable = layer.name in {"dropout_head", "artist_pred"}
 
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
-        loss="sparse_categorical_crossentropy",
+        optimizer=tf.keras.optimizers.AdamW(learning_rate=1e-3, weight_decay=WEIGHT_DECAY),
+        loss=loss_fn,
         metrics=["accuracy"],
     )
-    model.summary(line_length=80, print_fn=lambda s: print(s) if "Trainable" in s or "Non-trainable" in s else None)
+    model.summary(line_length=80,
+                  print_fn=lambda s: print(s) if "Trainable" in s or "Non-trainable" in s else None)
 
     t0 = time.time()
     hist1 = model.fit(
         train_ds, validation_data=val_ds,
-        epochs=EPOCHS_HEAD, callbacks=callbacks_baza, verbose=1,
+        epochs=EPOCHS_HEAD,
+        class_weight=class_weight_dict,
+        callbacks=[early_stop],
+        verbose=1,
     )
+    best_val1 = max(hist1.history["val_accuracy"])
     print(f"  Faza 1 finalizată în {(time.time()-t0)/60:.1f} min  "
-          f"| val_acc final = {hist1.history['val_accuracy'][-1]:.3f}")
+          f"| best val_acc = {best_val1:.4f}")
 
-    # ── Faza 2: dezghețăm block4+block5+FC, fine-tuning cu LR mic ───────────
+    # ── Faza 2: dezghețăm NUMAI block5 + FC, cosine decay ─────────────────
     print("\n" + "═" * 60)
-    print("  Faza 2 / 2 — fine-tuning block4+block5+FC (LR=1e-5)")
+    print("  Faza 2 / 2 — fine-tuning block5+FC (AdamW + cosine decay)")
     print("═" * 60)
+
     for layer in model.layers:
-        if layer.name in STRATURI_DEZGHETATE or layer.name in {"dropout_head", "artist_pred"}:
-            layer.trainable = True
+        layer.trainable = layer.name in STRATURI_DEZGHETATE
+
+    # Cosine decay: LR pornește de la 1e-5, scade la ~0 în EPOCHS_FT epoci
+    total_steps = EPOCHS_FT * steps_per_epoch
+    lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
+        initial_learning_rate=1e-5,
+        decay_steps=total_steps,
+        alpha=1e-7,
+    )
 
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
-        loss="sparse_categorical_crossentropy",
+        optimizer=tf.keras.optimizers.AdamW(
+            learning_rate=lr_schedule,
+            weight_decay=WEIGHT_DECAY,
+        ),
+        loss=loss_fn,
         metrics=["accuracy"],
     )
 
-    callbacks_ft = callbacks_baza + [
-        tf.keras.callbacks.ModelCheckpoint(
-            str(MODEL_PATH), monitor="val_accuracy",
-            save_best_only=True, verbose=1,
-        ),
-    ]
+    checkpoint_cb = tf.keras.callbacks.ModelCheckpoint(
+        str(MODEL_PATH), monitor="val_accuracy",
+        save_best_only=True, verbose=1,
+    )
+    # Faza 2 nu mai are ReduceLROnPlateau — cosine decay gestionează singur LR-ul
+    callbacks_ft = [early_stop, checkpoint_cb]
 
     t0 = time.time()
     hist2 = model.fit(
         train_ds, validation_data=val_ds,
-        epochs=EPOCHS_FT, callbacks=callbacks_ft, verbose=1,
+        epochs=EPOCHS_FT,
+        class_weight=class_weight_dict,
+        callbacks=callbacks_ft,
+        verbose=1,
     )
+    best_val2 = max(hist2.history["val_accuracy"])
     print(f"  Faza 2 finalizată în {(time.time()-t0)/60:.1f} min  "
-          f"| val_acc final = {hist2.history['val_accuracy'][-1]:.3f}")
+          f"| best val_acc = {best_val2:.4f}")
 
     return hist1.history, hist2.history
 
@@ -255,15 +245,14 @@ def _salveaza_grafic_antrenare(hist1, hist2):
     x2 = np.arange(ep1 + 1, ep1 + ep2 + 1)
 
     fig, (ax_acc, ax_loss) = plt.subplots(1, 2, figsize=(14, 5))
-
     for ax, key, titlu, ylab in [
         (ax_acc,  "accuracy", "Acuratețe antrenare / validare",  "Acuratețe"),
         (ax_loss, "loss",     "Loss antrenare / validare (CE)",  "Loss"),
     ]:
-        ax.plot(x1, hist1[key],           "b-o",  ms=4, label="train faza 1")
-        ax.plot(x1, hist1[f"val_{key}"],  "b--s", ms=4, label="val faza 1")
-        ax.plot(x2, hist2[key],           "r-o",  ms=4, label="train faza 2")
-        ax.plot(x2, hist2[f"val_{key}"],  "r--s", ms=4, label="val faza 2")
+        ax.plot(x1, hist1[key],          "b-o",  ms=4, label="train faza 1")
+        ax.plot(x1, hist1[f"val_{key}"], "b--s", ms=4, label="val faza 1")
+        ax.plot(x2, hist2[key],          "r-o",  ms=4, label="train faza 2")
+        ax.plot(x2, hist2[f"val_{key}"], "r--s", ms=4, label="val faza 2")
         ax.axvline(ep1 + 0.5, color="gray", ls=":", lw=1.5, label="start fine-tune")
         ax.set_xlabel("Epocă")
         ax.set_ylabel(ylab)
@@ -271,7 +260,7 @@ def _salveaza_grafic_antrenare(hist1, hist2):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    fig.suptitle("Fine-tuning VGG16 pe Best Artworks (50 artiști)", fontsize=13)
+    fig.suptitle("Fine-tuning VGG16 — block5 only, AdamW, cosine decay, label_smooth=0.1", fontsize=12)
     plt.tight_layout()
     functii.DATA_OUT.mkdir(parents=True, exist_ok=True)
     plt.savefig(functii.DATA_OUT / "Training_finetune.pdf", format="pdf", bbox_inches="tight")
@@ -279,7 +268,7 @@ def _salveaza_grafic_antrenare(hist1, hist2):
     print("[OK] grafic antrenare salvat: data_out/Training_finetune.pdf")
 
 
-# ─── extragere features cu modelul fine-tunat ────────────────────────────────
+# ─── extragere features ────────────────────────────────────────────────────────
 
 def _extrage_features(model, df_paths):
     """Extrage vectori fc2 din modelul fine-tunat pentru toate imaginile."""
@@ -288,11 +277,7 @@ def _extrage_features(model, df_paths):
     from tensorflow.keras.applications.vgg16 import preprocess_input
     from tensorflow.keras.preprocessing import image as kimage
 
-    feat_model = Model(
-        inputs=model.input,
-        outputs=model.get_layer("fc2").output,
-        name="feat_extractor",
-    )
+    feat_model = Model(inputs=model.input, outputs=model.get_layer("fc2").output)
 
     paths = df_paths["path"].tolist()
     n = len(paths)
@@ -344,35 +329,30 @@ def main():
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
 
-    # Date
-    print("\n[info] pregătire dataset...")
-    train_ds, val_ds, class_names = _pregateste_dataset(IMAGES, VAL_SPLIT, BATCH_TRAIN)
+    # Class weights (sqrt inverse frequency — robust la dezechilibru)
+    class_weight_dict, class_names = _calcul_class_weights(IMAGES)
     n_classes = len(class_names)
-    print(f"[info] {n_classes} clase (artiști), "
-          f"batch_size={BATCH_TRAIN}, val_split={VAL_SPLIT}")
+    max_w = max(class_weight_dict.values())
+    min_w = min(class_weight_dict.values())
+    print(f"[info] {n_classes} clase; class weights: min={min_w:.3f}, max={max_w:.3f} "
+          f"(sqrt inverse frequency)")
+
+    # Dataset
+    print("\n[info] pregătire dataset cu augmentare extinsă...")
+    train_ds, val_ds = _pregateste_dataset(IMAGES, VAL_SPLIT, BATCH_TRAIN, n_classes)
+    # Număr de batches pe epocă (pentru CosineDecay)
+    steps_per_epoch = sum(1 for _ in train_ds)
+    print(f"[info] {n_classes} clase, batch_size={BATCH_TRAIN}, "
+          f"val_split={VAL_SPLIT}, steps/epoch={steps_per_epoch}")
 
     # Model
     model = _construieste_model(n_classes)
-    total_p = model.count_params()
-    print(f"[info] model construit: {total_p:,} parametri total")
-
-    # O imagine de referință pentru preview-ul feature maps în timpul antrenării
-    sample_img_path = None
-    for d in sorted(IMAGES.iterdir()):
-        if not d.is_dir():
-            continue
-        for p in sorted(d.iterdir()):
-            if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}:
-                sample_img_path = p
-                break
-        if sample_img_path is not None:
-            break
+    print(f"[info] model: {model.count_params():,} parametri total")
 
     # Antrenare
-    hist1, hist2 = _antrenare(model, train_ds, val_ds, sample_img_path=sample_img_path)
+    hist1, hist2 = _antrenare(model, train_ds, val_ds, class_weight_dict, steps_per_epoch)
     _salveaza_grafic_antrenare(hist1, hist2)
 
-    # Salvare model (dacă ModelCheckpoint nu a salvat deja cel mai bun)
     if not MODEL_PATH.exists():
         model.save(str(MODEL_PATH))
     print(f"[OK] model salvat: {MODEL_PATH}")
@@ -385,11 +365,13 @@ def main():
     features, paths_ok = _extrage_features(model, df_paths)
     print(f"[OK] features shape = {features.shape}")
 
-    # Salvare features_cnn.csv (suprascrie cel din ImageNet dacă există)
     if FEATURES_CSV.exists():
         backup = FEATURES_CSV.with_suffix(".csv.imagenet_backup")
-        FEATURES_CSV.rename(backup)
-        print(f"[info] backup ImageNet features → {backup.name}")
+        if not backup.exists():
+            FEATURES_CSV.rename(backup)
+            print(f"[info] backup → {backup.name}")
+        else:
+            FEATURES_CSV.unlink()
 
     df_paths_ok = df_paths.set_index("path").loc[paths_ok].reset_index()
     feat_cols = [f"f{i+1}" for i in range(features.shape[1])]
