@@ -1,6 +1,10 @@
 """
-Pas 0: descarcă datasetul Best Artworks (dacă lipsește), extrage vectori VGG16 fc2
-și salvează features_cnn.csv. Rulat o singură dată.
+Pas 0: descarcă datasetul Best Artworks, extrage vectori DINOv2-base (CLS token, 768-dim)
+și salvează features_cnn.csv. Rulat o singură dată (sau după re-fine-tuning).
+
+DINOv2 (Meta, 2023) — ViT-B/14 antrenat self-supervised pe 142M imagini.
+Produce embeddings CLS de 768 dimensiuni, superioare VGG16 pe sarcini de stil vizual.
+ATENȚIE: features DINOv2 pot fi negative (fără ReLU final) → NMF va aplica MinMaxScaler automat.
 """
 import os
 import sys
@@ -17,14 +21,15 @@ DATA_IN = functii.DATA_IN
 IMAGES = DATA_IN / "images"
 ARTISTS_CSV = DATA_IN / "artists.csv"
 FEATURES_CSV = DATA_IN / "features_cnn.csv"
-FINETUNED_MODEL = DATA_IN / "vgg16_finetuned.keras"
+FINETUNED_MODEL = DATA_IN / "dinov2_finetuned.pt"
 
+BATCH_SIZE = 32
+IMG_SIZE = 224  # DINOv2-base acceptă 224×224
+
+
+# ─── download + unicode (identic cu VGG16 branch) ────────────────────────────
 
 def _configureaza_kaggle_config_dir():
-    """
-    Caută kaggle.json în ordine: $KAGGLE_CONFIG_DIR → ~/.kaggle → ./.kaggle (workspace).
-    Setează KAGGLE_CONFIG_DIR înainte de import-ul kaggle (care citește la import-time).
-    """
     if os.environ.get("KAGGLE_CONFIG_DIR") and \
        (Path(os.environ["KAGGLE_CONFIG_DIR"]) / "kaggle.json").exists():
         return
@@ -34,27 +39,13 @@ def _configureaza_kaggle_config_dir():
             os.environ["KAGGLE_CONFIG_DIR"] = str(c)
             print(f"[info] kaggle.json găsit la {c}")
             return
-    sys.exit("[eroare] kaggle.json nu a fost găsit. Pune-l în ~/.kaggle/kaggle.json "
-             "sau în ./.kaggle/kaggle.json din workspace (chmod 600).")
+    sys.exit("[eroare] kaggle.json nu a fost găsit.")
 
 
 def _repara_mojibake(nume, target_set):
-    """
-    Încearcă să repare un nume de folder corupt de encoding-uri greșite.
-
-    Exemple reale întâlnite cu Albrecht Dürer:
-      • 'Albrecht_DuΓòá├¬rer'   (dublu mojibake cp437 ↔ utf-8)
-      • 'Albrecht_Du╠êrer'      (NFD UTF-8 reinterpretat ca cp437)
-      • 'Albrecht_Dürer'  (NFD pur — combining diaeresis)
-
-    Strategia: încercăm chains de encode(cp437/cp850/cp1252/latin-1) → decode(utf-8)
-    de până la 3 niveluri, plus normalizare NFC, și verificăm dacă rezultatul
-    se potrivește cu un nume așteptat din `artists.csv`.
-    """
     nfc = unicodedata.normalize("NFC", nume)
     if nfc in target_set:
         return nfc
-
     encodings = ["cp437", "cp850", "cp1252", "latin-1"]
     seen = {nume}
     queue = [nume]
@@ -76,17 +67,8 @@ def _repara_mojibake(nume, target_set):
 
 
 def _normalizeaza_foldere_unicode():
-    """
-    Repară numele de foldere pe disc:
-      1. NFD → NFC (combining diacritic → caracter compus)
-      2. mojibake (cp437/cp850/cp1252/latin-1 ↔ utf-8) — vezi exemplele Albrecht Dürer
-
-    Folosește `artists.csv` ca referință pentru numele așteptate, ca să poată
-    repara corect chiar și după mai multe nivele de corupere.
-    """
     if not IMAGES.exists():
         return
-
     target_set = set()
     if ARTISTS_CSV.exists():
         df_art = pd.read_csv(ARTISTS_CSV)
@@ -100,32 +82,25 @@ def _normalizeaza_foldere_unicode():
             continue
         original = d.name
         nfc = unicodedata.normalize("NFC", original)
-
         target = None
         motiv = ""
         if nfc != original and nfc in target_set:
-            target = nfc
-            motiv = "NFD→NFC"
+            target, motiv = nfc, "NFD→NFC"
         elif nfc not in target_set and target_set:
             reparat = _repara_mojibake(original, target_set)
             if reparat is not None:
-                target = reparat
-                motiv = "mojibake"
+                target, motiv = reparat, "mojibake"
 
         if target is None or target == original:
             continue
-
         dest = d.parent / target
         if dest.exists():
-            # Destinația există deja (corectă) — folderul corupt e gol sau duplicat, ștergem
-            import shutil
             try:
                 if d.is_dir() and not any(d.iterdir()):
                     d.rmdir()
-                    print(f"[unicode] șters folder gol corupt: {original!r}")
                 else:
                     shutil.rmtree(str(d))
-                    print(f"[unicode] șters folder corupt (cu conținut mutat deja): {original!r}")
+                print(f"[unicode] șters folder corupt: {original!r}")
             except Exception as exc:
                 print(f"[unicode] nu pot șterge {original!r}: {exc}")
             continue
@@ -143,13 +118,9 @@ def _normalizeaza_foldere_unicode():
 
 
 def _verifica_foldere_dupa_descarcare(df_art):
-    """Afișează un raport complet: care pictori au folder pe disc și care lipsesc."""
     if not IMAGES.exists():
-        print("[warn] directorul images/ nu există încă")
         return
-
     foldere_disc = {unicodedata.normalize("NFC", d.name) for d in IMAGES.iterdir() if d.is_dir()}
-
     gasiti, lipsa = [], []
     for _, row in df_art.iterrows():
         folder_nfc = unicodedata.normalize("NFC", row["folder"])
@@ -161,28 +132,15 @@ def _verifica_foldere_dupa_descarcare(df_art):
     print(f"\n{'─'*55}")
     print(f"  Verificare foldere: {len(gasiti)}/{len(df_art)} pictori găsiți pe disc")
     print(f"{'─'*55}")
-
     if lipsa:
-        print(f"  [LIPSESC {len(lipsa)} pictori]")
         for nume, folder in sorted(lipsa):
-            print(f"    ✗  {nume:<30}  (folder asteptat: {folder})")
-        print()
-        # Show what's actually on disk for debugging
-        print(f"  Foldere existente pe disc ({len(foldere_disc)} total):")
-        for f in sorted(foldere_disc):
-            print(f"    •  {f}")
+            print(f"    ✗  {nume:<30}  (folder: {folder})")
     else:
         print(f"  [OK] toți cei {len(gasiti)} pictori au folder pe disc")
-
-    extra = foldere_disc - {unicodedata.normalize("NFC", r["folder"]) for _, r in df_art.iterrows()}
-    if extra:
-        print(f"\n  Foldere extra pe disc (nu sunt în artists.csv): {sorted(extra)}")
-
     print(f"{'─'*55}\n")
 
 
 def descarca_kaggle():
-    """Descarcă datasetul de pe Kaggle dacă nu există local — via API Python (nu CLI)."""
     if IMAGES.exists() and ARTISTS_CSV.exists():
         print(f"[OK] dataset deja prezent la {DATA_IN}")
     else:
@@ -192,30 +150,18 @@ def descarca_kaggle():
         try:
             from kaggle.api.kaggle_api_extended import KaggleApi
         except ImportError:
-            sys.exit("[eroare] pachetul 'kaggle' nu este instalat. Rulează: pip install kaggle")
-
+            sys.exit("[eroare] pachetul 'kaggle' nu este instalat.")
         api = KaggleApi()
-        try:
-            api.authenticate()
-        except Exception as e:
-            sys.exit(f"[eroare] autentificare Kaggle eșuată: {e}\n"
-                     f"Verifică username + key în kaggle.json.")
-        try:
-            api.dataset_download_files("ikarus777/best-artworks-of-all-time",
-                                        path=str(DATA_IN), unzip=True, quiet=False)
-        except Exception as e:
-            sys.exit(f"[eroare] descărcare dataset eșuată: {e}")
-
-        # Normalize layout: Kaggle archive may extract to images/images/<artist>/...
+        api.authenticate()
+        api.dataset_download_files("ikarus777/best-artworks-of-all-time",
+                                   path=str(DATA_IN), unzip=True, quiet=False)
         nested = IMAGES / "images"
         if nested.exists() and any(nested.iterdir()):
             for sub in nested.iterdir():
                 shutil.move(str(sub), str(IMAGES))
             nested.rmdir()
-            print(f"[info] layout corectat: images/images/ → images/")
+            print("[info] layout corectat: images/images/ → images/")
 
-    # Always run Unicode normalization and verification — catches both fresh and
-    # existing downloads that have NFD folder names on disk.
     _normalizeaza_foldere_unicode()
     if ARTISTS_CSV.exists():
         df_art = pd.read_csv(ARTISTS_CSV)
@@ -223,48 +169,124 @@ def descarca_kaggle():
         _verifica_foldere_dupa_descarcare(df_art)
 
 
-def colecteaza_paths_si_metadata():
-    return functii.colecteaza_paths_si_metadata()
+# ─── extragere DINOv2 ────────────────────────────────────────────────────────
 
+def _extrage_dinov2(image_paths, model_path=None):
+    """
+    Extrage embeddings CLS token din DINOv2-base pentru lista de imagini.
+    Dacă model_path există, încarcă modelul fine-tunat; altfel folosește frozen backbone.
+
+    Output: numpy array (N, 768), lista paths ok
+    """
+    import torch
+    from PIL import Image
+    from transformers import AutoImageProcessor, Dinov2Model
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[info] device: {device}")
+
+    processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
+
+    if model_path is not None and Path(model_path).exists():
+        print(f"[info] încărcare model DINOv2 fine-tunat: {model_path}")
+        checkpoint = torch.load(str(model_path), map_location=device)
+        backbone = Dinov2Model.from_pretrained("facebook/dinov2-base")
+        # Încărcăm greutățile backbone-ului din checkpoint (fără capul de clasificare)
+        backbone_state = {k.replace("dinov2.", ""): v
+                          for k, v in checkpoint["model_state"].items()
+                          if k.startswith("dinov2.")}
+        backbone.load_state_dict(backbone_state, strict=False)
+        print("[info] greutăți fine-tunate încărcate în backbone")
+    else:
+        print("[info] model fine-tunat negăsit — se folosesc greutăți DINOv2 frozen (ImageNet-142M)")
+        backbone = Dinov2Model.from_pretrained("facebook/dinov2-base")
+
+    backbone = backbone.to(device)
+    backbone.eval()
+
+    n_total = len(image_paths)
+    n_batches = (n_total + BATCH_SIZE - 1) // BATCH_SIZE
+    features = []
+    paths_ok = []
+    sarite = 0
+
+    print(f"[info] {n_total} imagini, {n_batches} batch-uri")
+    t0 = __import__("time").time()
+
+    for i, start in enumerate(range(0, n_total, BATCH_SIZE)):
+        batch_paths = image_paths[start : start + BATCH_SIZE]
+        imgs = []
+        ok = []
+        for p in batch_paths:
+            try:
+                img = Image.open(p).convert("RGB").resize((IMG_SIZE, IMG_SIZE))
+                imgs.append(img)
+                ok.append(p)
+            except Exception:
+                sarite += 1
+
+        if not imgs:
+            continue
+
+        inputs = processor(images=imgs, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = backbone(**inputs)
+            # CLS token: outputs.last_hidden_state[:, 0, :]
+            cls_tokens = outputs.last_hidden_state[:, 0, :].cpu().numpy()
+
+        features.append(cls_tokens)
+        paths_ok.extend(ok)
+
+        if (i + 1) % 25 == 0 or (i + 1) == n_batches:
+            elapsed = __import__("time").time() - t0
+            eta = elapsed / (i + 1) * (n_batches - i - 1)
+            print(f"  batch {i+1:>3}/{n_batches}  "
+                  f"elapsed={elapsed/60:.1f}min  ETA={eta/60:.1f}min", end="\r")
+
+    total_time = __import__("time").time() - t0
+    print(f"\n  [OK] {len(paths_ok)} imagini procesate  |  {sarite} sărite  "
+          f"|  {device}  |  medie {total_time/n_batches:.2f}s/batch")
+
+    return np.vstack(features), paths_ok
+
+
+# ─── main ─────────────────────────────────────────────────────────────────────
 
 def main():
     descarca_kaggle()
 
-    # Detectare model fine-tuned
     model_path = FINETUNED_MODEL if FINETUNED_MODEL.exists() else None
     if model_path:
         print(f"[info] model fine-tuned detectat: {model_path}")
         print("[info] features_cnn.csv va fi RE-GENERAT cu greutăți fine-tuned.")
         if FEATURES_CSV.exists():
             FEATURES_CSV.unlink()
-            print("[info] features_cnn.csv vechi (ImageNet) șters — regenerare cu model fine-tuned.")
+            print("[info] features_cnn.csv vechi șters — regenerare cu model fine-tuned.")
     else:
-        print("[info] model fine-tuned negăsit — se folosesc greutăți ImageNet.")
+        print("[info] model fine-tuned negăsit — se folosesc greutăți DINOv2 frozen.")
 
     if FEATURES_CSV.exists():
         size_mb = FEATURES_CSV.stat().st_size / 1e6
         print(f"[OK] {FEATURES_CSV} deja există ({size_mb:.1f} MB) — sar peste extragere.")
-        print(f"[info] sterge manual fisierul daca vrei sa re-extragi: rm {FEATURES_CSV}")
         return
 
-    df_paths = colecteaza_paths_si_metadata()
+    df_paths = functii.colecteaza_paths_si_metadata()
     if len(df_paths) == 0:
         sys.exit("[eroare] niciun fișier imagine găsit.")
 
-    print("[info] extragere VGG16 fc2 ...")
-    features, paths_ok = functii.extragere_cnn_vgg16(
-        df_paths["path"].tolist(), batch_size=32, model_path=model_path
-    )
+    print("[info] extragere DINOv2-base CLS token (768-dim) ...")
+    features, paths_ok = _extrage_dinov2(df_paths["path"].tolist(), model_path=model_path)
     print(f"[OK] features shape = {features.shape}")
+    print(f"[info] features DINOv2: min={features.min():.3f}, max={features.max():.3f} "
+          f"(pot fi negative — NMF va aplica MinMaxScaler automat)")
 
     df_paths_ok = df_paths.set_index("path").loc[paths_ok].reset_index()
     feat_cols = [f"f{i+1}" for i in range(features.shape[1])]
-    df_feat = pd.DataFrame(features, columns=feat_cols)
     df_out = pd.concat([df_paths_ok.reset_index(drop=True),
-                        df_feat.reset_index(drop=True)], axis=1)
+                        pd.DataFrame(features, columns=feat_cols).reset_index(drop=True)], axis=1)
     DATA_IN.mkdir(parents=True, exist_ok=True)
-
-    # Scrie atomic: temp file -> rename. Un crash mid-write nu poate corupe CSV-ul.
     temp_csv = FEATURES_CSV.with_suffix(".csv.tmp")
     df_out.to_csv(temp_csv, index=False)
     temp_csv.replace(FEATURES_CSV)
