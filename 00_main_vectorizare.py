@@ -198,7 +198,7 @@ def _extrage_dinov2(image_paths, model_path=None):
         backbone.load_state_dict(backbone_state, strict=False)
         print("[info] greutăți fine-tunate încărcate în backbone")
     else:
-        print("[info] model fine-tunat negăsit — se folosesc greutăți DINOv2 frozen (ImageNet-142M)")
+        print("[info] model fine-tunat negăsit — se folosesc greutăți DINOv2 frozen (self-supervised LVD-142M)")
         backbone = Dinov2Model.from_pretrained("facebook/dinov2-base")
 
     backbone = backbone.to(device)
