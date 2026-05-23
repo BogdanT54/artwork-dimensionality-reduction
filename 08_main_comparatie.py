@@ -200,7 +200,7 @@ def main():
     for nume, fn in [
         ("PCA",      lambda: reducere_dim.aplica_pca(None, x_s, meta_s, n_max=20)),
         ("FA",       lambda: reducere_dim.aplica_fa(None, x_s, meta_s, n_factori=10)),
-        ("NMF",      lambda: reducere_dim.aplica_nmf(None, x_s, meta_s, q_list=(10, 20))),
+        ("NMF",      lambda: reducere_dim.aplica_nmf(None, x_s, meta_s, q_list=(10, 20), max_iter=2000)),
         ("ICA",      lambda: reducere_dim.aplica_ica(None, x_s, meta_s, k=10)),
         ("KPCA-RBF", lambda: reducere_dim.aplica_kpca(None, x_s, meta_s, n_components=10)),
         ("t-SNE",    lambda: reducere_dim.aplica_tsne(None, x_s, meta_s,
