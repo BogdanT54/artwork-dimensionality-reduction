@@ -74,13 +74,14 @@ def main():
             panouri.append((coords_mds, meta_mds, "artist", "MDS (pictori)"))
             pasi.info(f"Încărcat: MDS ({coords_mds.shape})")
 
-    pasi.pas("Calcul metrici: Silhouette + Trustworthiness")
+    pasi.pas("Calcul metrici: Silhouette (artist/stil/epoca/gen) + Trustworthiness")
     df_feat = pd.read_csv(functii.DATA_IN / "features_cnn.csv")
     metadata_full = df_feat[META_COLS].copy()
     x_full = df_feat.drop(columns=META_COLS).values.astype(np.float32)
     x_std_full = StandardScaler().fit_transform(x_full)
     n_full = len(x_std_full)
 
+    LABELS_SIL = ["artist", "stil", "epoca", "gen"]
     silhouette_rez = []
     trust_rez = []
     for sub, csv, cols, nume in panouri_load:
@@ -88,16 +89,37 @@ def main():
         if coords is None:
             continue
 
-        # Silhouette
-        try:
-            n_sil = min(3000, len(coords))
-            idx_sil = np.random.RandomState(42).choice(len(coords), n_sil, replace=False)
-            sil = silhouette_score(coords[idx_sil], meta["artist"].iloc[idx_sil],
-                                   metric="euclidean")
-            silhouette_rez.append({"Metoda": nume, "Silhouette_artist_2D": round(float(sil), 4)})
-        except Exception as ex:
-            print(f"[warn] silhouette pentru {nume}: {ex}")
-            sil = float("nan")
+        # Silhouette pe fiecare etichetă disponibilă în metadata
+        n_sil = min(3000, len(coords))
+        idx_sil = np.random.RandomState(42).choice(len(coords), n_sil, replace=False)
+        row_sil = {"Metoda": nume}
+        sil_msg_parts = []
+        for lbl in LABELS_SIL:
+            if lbl not in meta.columns:
+                row_sil[f"Silhouette_{lbl}"] = float("nan")
+                continue
+            labels_arr = meta[lbl].iloc[idx_sil]
+            # Silhouette necesită ≥2 clase și ≥2 samples per clasă
+            n_classes = labels_arr.dropna().nunique()
+            if n_classes < 2:
+                row_sil[f"Silhouette_{lbl}"] = float("nan")
+                continue
+            try:
+                valid_mask = labels_arr.notna().values
+                if valid_mask.sum() < 10:
+                    row_sil[f"Silhouette_{lbl}"] = float("nan")
+                    continue
+                sil_lbl = silhouette_score(
+                    coords[idx_sil][valid_mask],
+                    labels_arr[valid_mask],
+                    metric="euclidean",
+                )
+                row_sil[f"Silhouette_{lbl}"] = round(float(sil_lbl), 4)
+                sil_msg_parts.append(f"{lbl}={sil_lbl:.3f}")
+            except Exception as ex:
+                print(f"[warn] silhouette {nume}/{lbl}: {ex}")
+                row_sil[f"Silhouette_{lbl}"] = float("nan")
+        silhouette_rez.append(row_sil)
 
         # Trustworthiness — doar pentru metode care acoperă tot setul (len(coords) == n_full)
         if len(coords) == n_full:
@@ -107,23 +129,52 @@ def main():
                 tw = trustworthiness(x_std_full[idx_trust], coords[idx_trust], n_neighbors=12)
                 trust_rez.append({"Metoda": nume,
                                   "Trustworthiness_12nn": round(float(tw), 4)})
-                pasi.info(f"{nume}: Silhouette={sil:.3f}, Trustworthiness={tw:.3f}")
+                pasi.info(f"{nume}: Sil[{', '.join(sil_msg_parts)}], Trust={tw:.3f}")
             except Exception as ex:
                 print(f"[warn] trustworthiness pentru {nume}: {ex}")
-                pasi.info(f"{nume}: Silhouette={sil:.3f}, Trustworthiness=N/A")
+                pasi.info(f"{nume}: Sil[{', '.join(sil_msg_parts)}], Trust=N/A")
         else:
-            pasi.info(f"{nume}: Silhouette={sil:.3f}, Trustworthiness=skipped (sub-eșantion)")
+            pasi.info(f"{nume}: Sil[{', '.join(sil_msg_parts)}], Trust=skipped (sub-eșantion)")
 
     pasi.pas("Salvare tabele + grafice metrice")
     if silhouette_rez:
         df_sil = pd.DataFrame(silhouette_rez)
         df_sil.to_csv(OUT / "Silhouette_comparatie.csv", index=False)
         print(df_sil.to_string(index=False))
-        grafice.plot_bar(df_sil["Silhouette_artist_2D"].values,
-                         df_sil["Metoda"].tolist(),
-                         "Silhouette_comparatie.pdf",
-                         titlu="Silhouette score pe label 'artist' (2D, per metodă)",
-                         x_label="Metoda", y_label="Silhouette")
+
+        # Grouped bar chart: 4 bare per metodă (artist, stil, epoca, gen)
+        metode_nume = df_sil["Metoda"].tolist()
+        n_metode = len(metode_nume)
+        x_pos = np.arange(n_metode)
+        bar_w = 0.20
+        culori_lbl = {"artist": "#1f77b4", "stil": "#ff7f0e", "epoca": "#2ca02c", "gen": "#d62728"}
+
+        fig, ax = plt.subplots(figsize=(max(10, n_metode * 1.5), 6))
+        for i, lbl in enumerate(LABELS_SIL):
+            col = f"Silhouette_{lbl}"
+            if col not in df_sil.columns:
+                continue
+            vals = df_sil[col].values.astype(float)
+            offset = (i - (len(LABELS_SIL) - 1) / 2) * bar_w
+            bars = ax.bar(x_pos + offset, np.nan_to_num(vals, nan=0.0),
+                          bar_w, label=lbl, color=culori_lbl.get(lbl, None),
+                          edgecolor="black", linewidth=0.5)
+            for bar, v in zip(bars, vals):
+                if not np.isnan(v):
+                    ax.text(bar.get_x() + bar.get_width() / 2,
+                            bar.get_height() + (0.005 if v >= 0 else -0.02),
+                            f"{v:.2f}", ha="center", va="bottom" if v >= 0 else "top",
+                            fontsize=7)
+        ax.axhline(0, color="gray", linewidth=0.8)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(metode_nume, rotation=20, ha="right")
+        ax.set_ylabel("Silhouette score")
+        ax.set_title("Silhouette score per metodă × etichetă (artist / stil / epocă / gen, 2D)")
+        ax.legend(title="Etichetă", loc="lower right")
+        ax.grid(True, alpha=0.3, axis="y")
+        plt.tight_layout()
+        plt.savefig(OUT / "Silhouette_comparatie.pdf", format="pdf", bbox_inches="tight")
+        plt.close(fig)
 
     if trust_rez:
         df_trust = pd.DataFrame(trust_rez)
