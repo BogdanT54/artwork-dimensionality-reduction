@@ -54,6 +54,12 @@ LR_BACKBONE   = 1e-5  # learning rate pentru ultimele 3 blocks (10× mai mic)
 N_BLOCKS_FT   = 3     # număr de transformer blocks dezghețate (din 12 total)
 IMG_SIZE      = 224
 
+# Vizualizare feature maps în timpul antrenării (analog cu VGG16)
+VIS_EVERY_N_BATCHES = 25                # cât de des să salvăm un PNG (la fiecare N batch-uri global)
+VIS_BLOCKS          = (0, 2, 5, 8, 11)  # care din cele 12 transformer blocks să afișăm
+VIS_TOP_CHANNELS    = 8                 # top canale (după varianță) per block
+VIS_SUBDIR          = "finetune_progress"
+
 
 # ─── augmentare (torchvision) ─────────────────────────────────────────────────
 
@@ -225,9 +231,99 @@ def _cosine_cu_warmup(optimizer, warmup_steps, total_steps):
     return LambdaLR(optimizer, lr_lambda)
 
 
+# ─── vizualizare feature maps live (analog cu VGG16) ─────────────────────────
+
+def _salveaza_feature_maps_dinov2(model, img_tensor, label, class_names,
+                                   batch_idx, elapsed_s, out_dir):
+    """
+    Salvează un PNG cu activările patch-urilor după 5 transformer blocks,
+    plus imaginea de input. Echivalent VGG16: feature maps per layer.
+
+    DINOv2 (ViT-B/14) procesează imaginea ca 16×16=256 patch-uri + CLS token.
+    Pentru fiecare block selectat, extragem hidden_state-ul patch-urilor,
+    îl reshape-uim în (16, 16, 768) și afișăm primele 8 canale cu varianță maximă.
+    """
+    import torch
+    import torchvision.transforms.functional as TF
+
+    backbone_was_training = model.backbone.training
+    model.backbone.eval()
+
+    n_patches_side = IMG_SIZE // 14  # 16 pentru 224×224
+
+    img_device = img_tensor.unsqueeze(0).to(model.device)
+    with torch.no_grad():
+        outputs = model.backbone(pixel_values=img_device, output_hidden_states=True)
+    hidden_states = outputs.hidden_states  # 13 tensori: embedding + 12 blocks
+
+    # Un-normalize input pentru afișare (revers ImageNet stats)
+    inv_mean = torch.tensor([-0.485 / 0.229, -0.456 / 0.224, -0.406 / 0.225]).view(3, 1, 1)
+    inv_std  = torch.tensor([1 / 0.229, 1 / 0.224, 1 / 0.225]).view(3, 1, 1)
+    img_unnorm = img_tensor.cpu() * inv_std + inv_mean
+    img_unnorm = torch.clamp(img_unnorm, 0, 1)
+    img_display = TF.to_pil_image(img_unnorm)
+
+    pictor_nume = class_names[label].replace("_", " ")
+
+    n_rows = len(VIS_BLOCKS) + 1  # +1 pentru rândul cu input + info
+    n_cols = VIS_TOP_CHANNELS
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 2, n_rows * 2.2))
+
+    # Rândul 0: input în stânga, info în mijloc
+    axes[0, 0].imshow(img_display)
+    axes[0, 0].set_title("Input (224×224)", fontsize=8, loc="left")
+    axes[0, 0].axis("off")
+    info_col = n_cols // 2
+    axes[0, info_col].text(
+        0.5, 0.5,
+        f"Batch #{batch_idx}\nPictor: {pictor_nume}\nDurata: {elapsed_s:.2f}s",
+        ha="center", va="center", fontsize=10, transform=axes[0, info_col].transAxes,
+    )
+    for j in range(n_cols):
+        if j != 0:
+            axes[0, j].axis("off")
+
+    # Rândurile 1..N: feature maps per block
+    for row_idx, block_idx in enumerate(VIS_BLOCKS, start=1):
+        # hidden_states[block_idx+1] = output DUPĂ block_idx (index 0 = embeddings inițiale)
+        hs = hidden_states[block_idx + 1][0]          # (257, 768) = CLS + 256 patches
+        patch_tokens = hs[1:, :]                       # (256, 768) — fără CLS
+        patch_maps = patch_tokens.reshape(
+            n_patches_side, n_patches_side, -1
+        ).cpu().float().numpy()                        # (16, 16, 768)
+
+        # Top 8 canale după varianță (cele mai informative pe această imagine)
+        channel_var = patch_maps.var(axis=(0, 1))
+        top_ch = np.argsort(-channel_var)[:VIS_TOP_CHANNELS]
+
+        for col, ch_idx in enumerate(top_ch):
+            heatmap = patch_maps[:, :, ch_idx]
+            axes[row_idx, col].imshow(heatmap, cmap="viridis", interpolation="nearest")
+            axes[row_idx, col].axis("off")
+            if col == 0:
+                axes[row_idx, col].set_title(
+                    f"block{block_idx}  shape=({n_patches_side}, {n_patches_side}, 768)",
+                    fontsize=8, loc="left",
+                )
+
+    fig.suptitle(
+        "DINOv2 — feature maps live (top 8 canale per block, patch tokens după self-attention)",
+        fontsize=11,
+    )
+    plt.tight_layout()
+
+    out_path = out_dir / f"batch_{batch_idx:06d}.png"
+    plt.savefig(out_path, format="png", bbox_inches="tight", dpi=80)
+    plt.close(fig)
+
+    if backbone_was_training:
+        model.backbone.train()
+
+
 # ─── antrenare ───────────────────────────────────────────────────────────────
 
-def _antreneaza_o_epoca(model, loader, optimizer, scheduler, loss_fn, scaler, device):
+def _antreneaza_o_epoca(model, loader, optimizer, scheduler, loss_fn, scaler, device,
+                        class_names=None, vis_dir=None, t_start=None, batch_counter=None):
     import torch
     model.backbone.train()
     model.head.train()
@@ -257,6 +353,19 @@ def _antreneaza_o_epoca(model, loader, optimizer, scheduler, loss_fn, scaler, de
         total_correct += (logits.argmax(1) == labels).sum().item()
         n += imgs.size(0)
 
+        # Vizualizare feature maps live (analog cu VGG16)
+        if batch_counter is not None and vis_dir is not None:
+            batch_counter[0] += 1
+            if batch_counter[0] % VIS_EVERY_N_BATCHES == 0:
+                elapsed = time.time() - t_start if t_start is not None else 0.0
+                try:
+                    _salveaza_feature_maps_dinov2(
+                        model, imgs[0].detach(), int(labels[0].item()),
+                        class_names, batch_counter[0], elapsed, vis_dir,
+                    )
+                except Exception as exc:
+                    print(f"  [warn] vizualizare eșuată la batch {batch_counter[0]}: {exc}")
+
     return total_loss / n, total_correct / n
 
 
@@ -278,13 +387,22 @@ def _evalueaza(model, loader, loss_fn, device):
     return total_loss / n, total_correct / n
 
 
-def _antrenare_completa(model, train_loader, val_loader, class_weights, device):
+def _antrenare_completa(model, train_loader, val_loader, class_weights, class_names, device):
     import torch
     import torch.nn as nn
 
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
     loss_fn = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=LABEL_SMOOTH)
     steps_per_epoch = len(train_loader)
+
+    # Director pentru PNG-uri cu feature maps live
+    vis_dir = functii.DATA_OUT / VIS_SUBDIR
+    vis_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[info] feature maps live → {vis_dir}/  (la fiecare {VIS_EVERY_N_BATCHES} batch-uri)")
+
+    # Counter global de batch-uri (persistă între faze) și moment start
+    batch_counter = [0]
+    t_start_training = time.time()
 
     hist1 = {"loss": [], "acc": [], "val_loss": [], "val_acc": []}
     hist2 = {"loss": [], "acc": [], "val_loss": [], "val_acc": []}
@@ -299,7 +417,11 @@ def _antrenare_completa(model, train_loader, val_loader, class_weights, device):
     best_val_acc = 0.0
 
     for ep in range(1, EPOCHS_PROBE + 1):
-        tr_loss, tr_acc = _antreneaza_o_epoca(model, train_loader, opt1, None, loss_fn, scaler, device)
+        tr_loss, tr_acc = _antreneaza_o_epoca(
+            model, train_loader, opt1, None, loss_fn, scaler, device,
+            class_names=class_names, vis_dir=vis_dir,
+            t_start=t_start_training, batch_counter=batch_counter,
+        )
         val_loss, val_acc = _evalueaza(model, val_loader, loss_fn, device)
         hist1["loss"].append(tr_loss)
         hist1["acc"].append(tr_acc)
@@ -334,7 +456,11 @@ def _antrenare_completa(model, train_loader, val_loader, class_weights, device):
     t0 = time.time()
 
     for ep in range(1, EPOCHS_FT + 1):
-        tr_loss, tr_acc = _antreneaza_o_epoca(model, train_loader, opt2, scheduler, loss_fn, scaler, device)
+        tr_loss, tr_acc = _antreneaza_o_epoca(
+            model, train_loader, opt2, scheduler, loss_fn, scaler, device,
+            class_names=class_names, vis_dir=vis_dir,
+            t_start=t_start_training, batch_counter=batch_counter,
+        )
         val_loss, val_acc = _evalueaza(model, val_loader, loss_fn, device)
         hist2["loss"].append(tr_loss)
         hist2["acc"].append(tr_acc)
@@ -499,7 +625,9 @@ def main():
     print(f"[info] DINOv2-base: {n_params:,} parametri total")
 
     # Antrenare
-    hist1, hist2 = _antrenare_completa(model, train_loader, val_loader, class_weights, device)
+    hist1, hist2 = _antrenare_completa(
+        model, train_loader, val_loader, class_weights, class_names, device
+    )
     _salveaza_grafic_antrenare(hist1, hist2)
     print(f"[OK] model salvat: {MODEL_PATH}")
 
