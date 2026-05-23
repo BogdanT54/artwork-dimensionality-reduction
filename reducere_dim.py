@@ -106,7 +106,7 @@ def aplica_fa(df, x, metadata, n_factori=None):
     )
 
 
-def aplica_nmf(df, x, metadata, q_list=(5, 10, 15, 20, 30, 50)):
+def aplica_nmf(df, x, metadata, q_list=(5, 10, 15, 20, 30, 50), max_iter=1000):
     """NMF cu Elbow pe eroare reconstrucție. X trebuie să fie ≥ 0.
     Dacă features au valori negative (ex. DINOv2, ResNet fără ReLU final),
     se aplică automat MinMaxScaler[0,1] înainte de NMF.
@@ -123,7 +123,7 @@ def aplica_nmf(df, x, metadata, q_list=(5, 10, 15, 20, 30, 50)):
     erori = []
     rezultate = {}
     for q in q_list:
-        model = NMF(n_components=q, init="nndsvd", max_iter=1000, random_state=42)
+        model = NMF(n_components=q, init="nndsvd", max_iter=max_iter, random_state=42)
         W = model.fit_transform(x)
         H = model.components_
         reconstr = W @ H
