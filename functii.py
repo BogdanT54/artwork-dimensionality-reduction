@@ -642,6 +642,30 @@ def calcul_stres_mds(D_orig, D_redus):
     return float(np.sqrt(num / den))
 
 
+def calcul_gamma(x):
+    """Gamma pentru kernel RBF din heuristică median: 1 / (2 * median(d²)).
+    Alternativă robustă la 1/n_features — adaptată la distribuția reală a datelor.
+    """
+    from scipy.spatial.distance import pdist
+    d = pdist(np.asarray(x, dtype=np.float64), metric="euclidean")
+    return float(1.0 / (2.0 * np.median(d * d)))
+
+
+def mi_matrix(x, y):
+    """Informație mutuală X→Y: matrice (p_x, p_y), estimare k-NN (neparametric).
+    Folosire: MI(componente_PCA, axe_reduse) pentru KPCA/t-SNE.
+    """
+    from sklearn.feature_selection import mutual_info_regression
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    p, q = x.shape[1], y.shape[1]
+    mi = np.zeros((p, q))
+    for i in range(p):
+        for j in range(q):
+            mi[i, j] = mutual_info_regression(x[:, i].reshape(-1, 1), y[:, j])[0]
+    return mi
+
+
 def calcul_entropie_ica(scoruri):
     """
     Entropia + kurtosis pentru fiecare componentă independentă.

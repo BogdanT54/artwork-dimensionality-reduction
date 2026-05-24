@@ -368,6 +368,45 @@ def plot_shepard(D_orig, D_redus, fisier="Shepard_MDS.pdf"):
     _savefig(fisier)
 
 
+def plot_shepard_pdist(delta, d, pearson_r2=None,
+                       fisier="Shepard.pdf", titlu="Diagrama Shepard"):
+    """Shepard pe vectori pdist 1D (output scipy.spatial.distance.pdist).
+    Pearson R² afișat în titlu — măsoară cât de bine sunt păstrate distanțele globale.
+    """
+    delta = np.asarray(delta)
+    d = np.asarray(d)
+    r2_txt = f"  (R²={pearson_r2:.4f})" if pearson_r2 is not None else ""
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.scatter(delta, d, s=8, alpha=0.35, color="steelblue", edgecolors="none")
+    lim = max(float(delta.max()), float(d.max()))
+    ax.plot([0, lim], [0, lim], "r--", alpha=0.7, label="y = x (conservare perfectă)")
+    ax.set_title(titlu + r2_txt, fontsize=12)
+    ax.set_xlabel("Distanță originală (spațiu PCA)")
+    ax.set_ylabel("Distanță în spațiu redus")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    _savefig(fisier)
+
+
+def plot_heatmap_mi(mi, row_labels, col_labels,
+                    fisier="MI_XY.pdf", titlu="Informație mutuală X→Y"):
+    """Heatmap MI (p_x × p_y). Adnotare numerică dacă p_x ≤ 30, altfel fără.
+    Folosire: MI(componente_PCA, axe_reduse) pentru KPCA și t-SNE.
+    """
+    df_mi = pd.DataFrame(mi, index=row_labels, columns=col_labels)
+    annot = len(row_labels) <= 30
+    figw = max(6, len(col_labels) * 1.8)
+    figh = max(5, len(row_labels) * 0.28)
+    fig, ax = plt.subplots(figsize=(figw, figh))
+    sns.heatmap(df_mi, vmin=0, vmax=None, cmap="Reds",
+                annot=annot, fmt=".2f" if annot else "", ax=ax)
+    ax.set_title(titlu, fontsize=12)
+    ax.set_xlabel("Axe reduse")
+    ax.set_ylabel("Componente intrare")
+    plt.tight_layout()
+    _savefig(fisier)
+
+
 def plot_reconstructie_pca(eroare_per_q, fisier="Reconstructie_PCA.pdf"):
     """Eroarea de reconstrucție PCA în funcție de q."""
     fig, ax = plt.subplots(figsize=(10, 6))

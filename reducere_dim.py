@@ -168,9 +168,15 @@ def aplica_ica(df, x, metadata, k):
 
 
 def aplica_kpca(df, x, metadata, kernel="rbf", n_components=20, gamma=None):
-    """Kernel PCA cu kernel-ul ales (RBF implicit)."""
+    """Kernel PCA cu kernel-ul ales (RBF implicit).
+    Gamma calculat prin heuristică median (calcul_gamma) dacă nu e specificat explicit.
+    """
     scaler = StandardScaler()
     x_std = scaler.fit_transform(x)
+
+    # Heuristică median (ca la profesor: gamma = 1/(2*median(d²)))
+    if gamma is None:
+        gamma = functii.calcul_gamma(x_std)
 
     kpca = KernelPCA(n_components=n_components, kernel=kernel, gamma=gamma,
                      fit_inverse_transform=False, random_state=42)
@@ -180,15 +186,15 @@ def aplica_kpca(df, x, metadata, kernel="rbf", n_components=20, gamma=None):
     pca_ref = PCA(n_components=n_components)
     scoruri_pca = pca_ref.fit_transform(x_std)
 
-    gamma_efectiv = gamma if gamma is not None else 1.0 / x_std.shape[1]
     return RezultatReducere(
         nume="KPCA",
         scoruri=scoruri,
         extra={
             "kernel": kernel,
             "gamma": gamma,
-            "gamma_efectiv": gamma_efectiv,
+            "gamma_efectiv": gamma,
             "scoruri_pca_referinta": scoruri_pca,
+            "x_std": x_std,
             "eigenvalues": getattr(kpca, "eigenvalues_", None),
             "model": kpca,
         },
@@ -240,7 +246,12 @@ def aplica_mds(df, x, metadata, coloana_grup="artist", q_list=(2, 3, 4, 5, 6, 8,
 
 
 def aplica_tsne(df, x, metadata, perplexity_list=(5, 30, 50, 100), n_pca=50, perp_3d=50):
-    """t-SNE 2D pe primele n_pca componente PCA (pipeline standard)."""
+    """t-SNE 2D pe primele n_pca componente PCA (pipeline standard).
+    Returnează x_pca în extra pentru calcul MI și Shepard în main.
+    """
+    from scipy.spatial.distance import pdist
+    from scipy.stats import pearsonr
+
     scaler = StandardScaler()
     x_std = scaler.fit_transform(x)
     n_pca = min(n_pca, x_std.shape[1], x_std.shape[0] - 1)
@@ -252,9 +263,23 @@ def aplica_tsne(df, x, metadata, perplexity_list=(5, 30, 50, 100), n_pca=50, per
         tsne = TSNE(n_components=2, perplexity=perp, random_state=42,
                     init="pca", max_iter=1000, learning_rate="auto")
         scoruri = tsne.fit_transform(x_pca)
+        # Pearson R² între distanțe originale (PCA) și distanțe t-SNE
+        # Sub-eșantionare la 2000 obs pentru a evita pdist O(n²) pe 8446 obs
+        n_obs = x_pca.shape[0]
+        if n_obs > 2000:
+            idx_sub = np.random.default_rng(42).choice(n_obs, 2000, replace=False)
+            delta_sub = pdist(x_pca[idx_sub], metric="euclidean")
+            d_sub = pdist(scoruri[idx_sub], metric="euclidean")
+        else:
+            delta_sub = pdist(x_pca, metric="euclidean")
+            d_sub = pdist(scoruri, metric="euclidean")
+        r, _ = pearsonr(delta_sub, d_sub)
         rezultate[perp] = {
             "scoruri": scoruri,
             "kl_divergence": float(tsne.kl_divergence_),
+            "pearson_r2": float(r ** 2),
+            "delta_shepard": delta_sub,
+            "d_shepard": d_sub,
         }
 
     # 3D t-SNE pentru perp_3d (folosit în 07_main_tsne.py)
@@ -271,6 +296,7 @@ def aplica_tsne(df, x, metadata, perplexity_list=(5, 30, 50, 100), n_pca=50, per
             "perplexity_list": list(perplexity_list),
             "rezultate_per_perp": rezultate,
             "n_pca_intermediar": n_pca,
+            "x_pca": x_pca,
             "scoruri_3d": scoruri_3d,
             "perp_3d": perp_3d,
         },

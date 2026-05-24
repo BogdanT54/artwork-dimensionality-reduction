@@ -26,11 +26,16 @@ def _construieste_validitate(e, n_obs):
          "Valoare": "Nu comparabil cross-perplexity",
          "Interpretare": "KL depinde de distribuția P (se modifică cu fiecare perplexity); "
                          "valorile nu se compară între perplexity-uri diferite — "
-                         "folosiți Trustworthiness pentru comparație cross-perplexity"},
-        *[{"Criteriu": f"KL Divergence (perp={perp})",
+                         "folosiți Pearson R² distanțe sau Trustworthiness pentru comparație"},
+        *[{"Criteriu": f"KL Div (perp={perp})",
            "Valoare": f"{kl:.4f}",
            "Interpretare": "Diagnostic intern: calitate fit pentru ACEASTĂ configurație"}
           for perp, kl in kl_values.items()],
+        *[{"Criteriu": f"Pearson R² distanțe (perp={perp})",
+           "Valoare": f"{rezultate[perp].get('pearson_r2', float('nan')):.4f}",
+           "Interpretare": "Corelație pătratică între distanțe originale și t-SNE "
+                           "(sub-eșantion 2000 obs); măsoară păstrarea structurii globale"}
+          for perp in kl_values.keys()],
         {"Criteriu": "Observații",
          "Valoare": f"{n_obs}",
          "Interpretare": "Imagini procesate"},
@@ -77,7 +82,41 @@ def main():
                             titlu="Validitate t-SNE — KL divergence, perplexity")
     print(df_val.to_string(index=False))
 
-    pasi.pas("Grafice (grid 4×4: 4 perplexity × 4 coloraje)")
+    pasi.pas("MI + Shepard + Grafice (grid 4×4: 4 perplexity × 4 coloraje)")
+
+    # ── Mutual Information: x_pca (50-dim) → t-SNE axes (2-dim), perp=30
+    perp_main = 30
+    if perp_main not in e["rezultate_per_perp"]:
+        perp_main = e["perplexity_list"][1]  # fallback la al doilea perplexity
+    pasi.info(f"Calcul MI(x_pca_50, tSNE_perp={perp_main}) — 50×2=100 calcule ...")
+    x_pca = e["x_pca"]
+    scoruri_main = e["rezultate_per_perp"][perp_main]["scoruri"]
+    mi_xy = functii.mi_matrix(x_pca, scoruri_main)
+    pd.DataFrame(mi_xy,
+                 index=[f"PCA{i+1}" for i in range(mi_xy.shape[0])],
+                 columns=["t1", "t2"]
+                 ).to_csv(OUT / f"MI_PCA_tSNE_perp{perp_main}.csv")
+    grafice.plot_heatmap_mi(
+        mi_xy,
+        row_labels=[f"PCA{i+1}" for i in range(mi_xy.shape[0])],
+        col_labels=["t1", "t2"],
+        fisier=f"MI_PCA_tSNE_perp{perp_main}.pdf",
+        titlu=f"Informație mutuală: componente PCA → axe t-SNE (perp={perp_main})",
+    )
+
+    # ── Shepard + Pearson R² pentru fiecare perplexity (pre-calculat în aplica_tsne)
+    for perp in e["perplexity_list"]:
+        d_perp = e["rezultate_per_perp"][perp]
+        r2 = d_perp.get("pearson_r2")
+        delta_sh = d_perp.get("delta_shepard")
+        d_sh = d_perp.get("d_shepard")
+        if delta_sh is not None and d_sh is not None:
+            grafice.plot_shepard_pdist(
+                delta_sh, d_sh, pearson_r2=r2,
+                fisier=f"Shepard_tSNE_perp{perp}.pdf",
+                titlu=f"Diagrama Shepard — t-SNE (perp={perp})",
+            )
+            pasi.info(f"Shepard perp={perp}: R²={r2:.4f}")
     for by in ["artist", "stil", "epoca", "gen"]:
         fig, axes = plt.subplots(2, 2, figsize=(20, 18))
         for ax, perp in zip(axes.flat, perplexity_list):

@@ -36,7 +36,7 @@ def _construieste_validitate(rez, x_s_shape, n_comp):
          "Interpretare": "KPCA scalează O(n²) → sub-eșantionare stratificată per pictor"},
         {"Criteriu": "Gamma efectiv (RBF)",
          "Valoare": f"{gamma_ef:.2e}",
-         "Interpretare": "1/n_features implicit; controlează lărgimea kernelului Gaussian"},
+         "Interpretare": "Heuristică median: 1/(2·median(d²)); adaptată la distribuția reală a datelor"},
         {"Criteriu": "Varianță explicată Comp1+2 (kernel)",
          "Valoare": f"{var_2d:.2f}%" if not np.isnan(var_2d) else "N/A",
          "Interpretare": "% din varianța totală în spațiul kernel (eigenvalue ratio)"},
@@ -99,7 +99,44 @@ def main():
                             titlu="Validitate KPCA — kernel RBF vs PCA liniar")
     print(df_val.to_string(index=False))
 
-    pasi.pas("Grafice (eigenvalues, comparație 2D PCA vs KPCA, scatter 3D)")
+    pasi.pas("MI + Shepard + Grafice (eigenvalues, comparație 2D PCA vs KPCA, scatter 3D)")
+
+    # ── Mutual Information: PCA liniar → KPCA (20×20 = 400 calcule, fezabil)
+    pasi.info("Calcul MI(scoruri_PCA, scoruri_KPCA) ...")
+    mi_xy = functii.mi_matrix(e["scoruri_pca_referinta"], rez.scoruri)
+    pd.DataFrame(mi_xy,
+                 index=[f"C{i+1}" for i in range(mi_xy.shape[0])],
+                 columns=[f"K{j+1}" for j in range(mi_xy.shape[1])]
+                 ).to_csv(OUT / "MI_PCA_KPCA.csv")
+    grafice.plot_heatmap_mi(
+        mi_xy,
+        row_labels=[f"C{i+1}" for i in range(mi_xy.shape[0])],
+        col_labels=[f"K{j+1}" for j in range(mi_xy.shape[1])],
+        fisier="MI_PCA_KPCA.pdf",
+        titlu="Informație mutuală: componente PCA → axe Kernel PCA (RBF)",
+    )
+
+    # ── Shepard + Pearson R²: distanțe în spațiu standardizat vs KPCA
+    from scipy.spatial.distance import pdist
+    from scipy.stats import pearsonr
+    x_std_kpca = e["x_std"]
+    n_kpca = x_std_kpca.shape[0]
+    if n_kpca > 1500:
+        rng = np.random.default_rng(42)
+        idx_sh = rng.choice(n_kpca, 1500, replace=False)
+        delta_sh = pdist(x_std_kpca[idx_sh], metric="euclidean")
+        d_sh = pdist(rez.scoruri[idx_sh], metric="euclidean")
+    else:
+        delta_sh = pdist(x_std_kpca, metric="euclidean")
+        d_sh = pdist(rez.scoruri, metric="euclidean")
+    r_sh, _ = pearsonr(delta_sh, d_sh)
+    r2_sh = float(r_sh ** 2)
+    pasi.info(f"Shepard Pearson R² (KPCA vs spațiu standardizat) = {r2_sh:.4f}")
+    grafice.plot_shepard_pdist(
+        delta_sh, d_sh, pearson_r2=r2_sh,
+        fisier="Shepard_KPCA.pdf",
+        titlu="Diagrama Shepard — Kernel PCA (RBF)",
+    )
     if ev is not None and len(ev) > 0:
         n_ev = min(20, len(ev))
         grafice.plot_bar(ev[:n_ev].astype(float),
